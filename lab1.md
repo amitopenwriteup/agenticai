@@ -2,6 +2,24 @@
 
 *Hands-on workshop for the Model Landscape for Agentic AI session (Sections 3 to 5). Duration: about 90 minutes.*
 
+---
+
+## Table of Contents
+1. [Learning goals](#learning-goals)
+2. [Prerequisites](#prerequisites)
+3. [Part 0: Setup](#part-0-setup-15-min)
+4. [Part 1: Predict memory before you measure](#part-1-predict-memory-before-you-measure-10-min)
+5. [Part 2: Run the models and measure](#part-2-run-the-models-and-measure-20-min)
+6. [Part 3: Test tool calling and structured output](#part-3-test-tool-calling-and-structured-output-20-min)
+7. [Part 4: Model-selection workshop](#part-4-model-selection-workshop-20-min)
+8. [Deliverable](#deliverable)
+9. [Troubleshooting](#troubleshooting-debugging-practice)
+10. [Optional extensions](#optional-extensions)
+11. [Cleanup](#cleanup)
+12. [Instructor notes](#instructor-notes)
+
+---
+
 ## Learning goals
 
 By the end of this lab you will be able to:
@@ -14,30 +32,85 @@ By the end of this lab you will be able to:
 
 ## Prerequisites
 
+- An **Ubuntu 22.04 or 24.04 VM or machine** (the steps below assume Ubuntu), with `sudo` access. On macOS or Windows, install Ollama from ollama.com and adapt the shell commands.
 - Python 3.10 or newer and basic command-line skills.
-- A machine with at least 8 GB of free RAM (16 GB recommended). A GPU is optional.
+- At least 8 GB of free RAM (16 GB recommended) and 4 or more CPU cores. A GPU is optional.
 - About 10 GB of free disk space.
 - Familiarity with prompts, tokens and basic tool calling.
 
-You will use **Ollama** as the local inference runtime and the **ollama** Python package. The model is a small open-weight instruct model, **Llama 3.2 3B**, in two quantised builds. If your machine is limited, use the 1B variant. Tag names can change, so confirm exact tags on the Ollama model library page before you start.
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| OS        | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
+| CPU       | 4 cores | 8 cores |
+| RAM       | 8 GB | 16 GB |
+| Disk      | 20 GB | 40 GB |
+| GPU       | Not required | NVIDIA (optional, for speed) |
 
-## Part 0: Setup (10 min)
+You will use **Ollama** as the local inference runtime and the **ollama** Python package. The model is a small open-weight instruct model, **Llama 3.2 3B**, in two quantised builds. If your machine has 8 GB of RAM or less, use the **1B** variant (tags are given in Part 0). Tag names and sizes can change, so confirm exact tags on the Ollama model library page before you start.
 
-**Step 0.1: Install Ollama.** Download it from ollama.com and install it. Confirm it works:
+---
+
+## Part 0: Setup (15 min)
+
+> **Tip:** The model downloads are the slowest step. Start Step 0.7 early, and read Part 1 while it runs.
+
+**Step 0.1: Check your machine.**
+
+```bash
+nproc          # CPU cores
+free -h        # RAM
+df -h /        # Disk space
+lsb_release -a # OS version
+```
+
+**Step 0.2: Update the system and install the tools you need.**
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y curl python3 python3-pip python3-venv htop
+python3 --version   # Expected: Python 3.10 or higher
+```
+
+**Step 0.3: Install Ollama.**
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+This script downloads the Ollama binary, installs it to `/usr/local/bin/ollama`, and creates, enables and starts a systemd service called `ollama`.
+
+> **Security tip:** Piping a script from the internet into `sh` runs it with your permissions. That is acceptable on a lab VM. In production, download the script and read it first.
+
+**Step 0.4: Verify the installation and the service.**
 
 ```bash
 ollama --version
+sudo systemctl enable --now ollama
+sudo systemctl status ollama     # Expect "active (running)". Press q to exit.
 ```
 
-**Step 0.2: Create a Python environment and install the client.**
+If you prefer to run Ollama by hand instead, stop the service first (`sudo systemctl stop ollama`) and then run `ollama serve` in a separate terminal. Do not run both, or the port will already be in use.
+
+> **Leave `OLLAMA_HOST` alone.** By default Ollama listens only on `127.0.0.1:11434`, which is all this lab needs. Ollama has no authentication, so do not bind it to `0.0.0.0` unless you have a firewall in place.
+
+**Step 0.5: Verify the API is running.**
 
 ```bash
-python -m venv lab-env
-source lab-env/bin/activate   # Windows: lab-env\Scripts\activate
-pip install ollama psutil
+curl http://localhost:11434/api/tags
 ```
 
-**Step 0.3: Pull two quantised builds of the same model.**
+Expected: a JSON response (an empty model list is fine at this point).
+
+**Step 0.6: Create a Python environment and install the client.**
+
+```bash
+python3 -m venv lab-env
+source lab-env/bin/activate     # You should now see (lab-env) in your prompt
+pip install --upgrade pip
+pip install ollama
+```
+
+**Step 0.7: Pull two quantised builds of the same model.**
 
 ```bash
 ollama pull llama3.2:3b-instruct-q4_K_M
@@ -45,13 +118,30 @@ ollama pull llama3.2:3b-instruct-q8_0
 ollama list
 ```
 
+*Low-memory machines (8 GB or less): use the 1B builds instead, and use these names everywhere below.*
+
+```bash
+ollama pull llama3.2:1b-instruct-q4_K_M
+ollama pull llama3.2:1b-instruct-q8_0
+```
+
 Note the file size shown for each build.
 
-**Checkpoint:** `ollama list` shows both models, and the Q8 file is roughly twice the size of the Q4 file.
+**Step 0.8: Test one model.**
+
+```bash
+ollama run llama3.2:3b-instruct-q4_K_M "Say hello in one sentence"
+```
+
+Expected: a short greeting. This also loads the model, so later runs start faster.
+
+**Checkpoint:** `ollama list` shows both models, the Q8 file is clearly larger than the Q4 file (roughly 1.5 to 2 times), and the test greeting worked.
+
+---
 
 ## Part 1: Predict memory before you measure (10 min)
 
-**Step 1.1:** Use this rule of thumb: weights memory is approximately parameters times bytes per parameter.
+**Step 1.1:** Use this rule of thumb: weights memory is approximately parameters times bytes per parameter. Llama 3.2 3B has about 3 billion parameters. Use 3 billion for your estimate.
 
 **Step 1.2:** Fill in the table with your predictions for a 3B model (weights only).
 
@@ -63,14 +153,17 @@ Note the file size shown for each build.
 
 **Step 1.3:** Compare your Q4 and Q8 predictions with the sizes from `ollama list`.
 
-**Reflection:** Why is the real file larger than your estimate? Consider scaling factors, layers kept at higher precision, and metadata. What else will use memory at run time besides the weights?
+**Reflection:** Why is the real file larger than your estimate? Consider scaling factors, layers kept at higher precision, and metadata. The "Q4_K_M" build is a mixed-precision format that uses a little over 4 bits per weight on average, not exactly 4. What else will use memory at run time besides the weights?
+
+---
 
 ## Part 2: Run the models and measure (20 min)
 
 **Step 2.1:** Create a file named `bench.py` with the code below. It runs the same prompts on a given model and records speed from the runtime's own counters.
 
 ```python
-import sys, ollama
+import sys
+import ollama
 
 model = sys.argv[1]
 prompts = [
@@ -80,30 +173,40 @@ prompts = [
     "List the three steps a support agent should take.",
 ]
 
+speeds = []
 for p in prompts:
-    r = ollama.chat(model=model, messages=[{"role": "user", "content": p}],
+    r = ollama.chat(model=model,
+                    messages=[{"role": "user", "content": p}],
                     options={"temperature": 0})
     tokens = r["eval_count"]
     secs = r["eval_duration"] / 1e9
+    speeds.append(tokens / secs)
     print(f"\n--- {p[:50]}...")
     print(r["message"]["content"])
-    print(f"[{tokens} tokens, {tokens/secs:.1f} tokens/sec]")
+    print(f"[{tokens} tokens, {tokens / secs:.1f} tokens/sec]")
+
+print(f"\nAverage speed: {sum(speeds) / len(speeds):.1f} tokens/sec")
 ```
 
-**Step 2.2:** Run it for both builds, saving the output:
+> The speed figure measures generation only, so model loading time does not distort it. The first prompt may still feel slow while the model loads.
+
+**Step 2.2:** Run it for both builds. `tee` lets you read the output on screen and save it:
 
 ```bash
-python bench.py llama3.2:3b-instruct-q4_K_M > q4_results.txt
-python bench.py llama3.2:3b-instruct-q8_0 > q8_results.txt
+python bench.py llama3.2:3b-instruct-q4_K_M | tee q4_results.txt
+python bench.py llama3.2:3b-instruct-q8_0 | tee q8_results.txt
 ```
 
-**Step 2.3:** While a model is loaded, check its memory use:
+**Step 2.3:** Check memory use. Right after a run (the model stays loaded for a few minutes), run this in a second terminal:
 
 ```bash
 ollama ps
+free -h
 ```
 
-**Step 2.4:** Record your results.
+`ollama ps` shows the loaded model, its total memory size (which includes working memory such as the KV cache, not just the weights), and how it is split between CPU and GPU. Use `htop` if you want a live view.
+
+**Step 2.4:** Record your results. Score quality from 1 to 5 using the same rubric for both builds: 5 is correct, complete and clear; 3 is mostly correct with gaps; 1 is wrong or unusable. Score without looking at which build produced the answer, if your partner can shuffle the files.
 
 | Measure | Q4 | Q8 |
 | --- | --- | --- |
@@ -115,7 +218,9 @@ ollama ps
 
 **Checkpoint:** you have two result files and a completed table.
 
-**Reflection:** Is the speed difference what you expected? Is any quality difference visible at temperature 0, or do the outputs look similar? Remember that results depend on your hardware.
+**Reflection:** Is the speed difference what you expected? Is any quality difference visible at temperature 0, or do the outputs look similar? Remember that results depend on your hardware, and that three prompts is a very small sample.
+
+---
 
 ## Part 3: Test tool calling and structured output (20 min)
 
@@ -124,7 +229,8 @@ Agents depend on valid tool calls and schema-conforming output. Quantisation can
 **Step 3.1:** Create `tools_test.py`:
 
 ```python
-import sys, json, ollama
+import sys
+import ollama
 
 model = sys.argv[1]
 
@@ -157,9 +263,9 @@ for question, expected in cases:
     if expected is None:
         ok = len(calls) == 0
     else:
-        ok = (len(calls) == 1 and
-              calls[0]["function"]["name"] == "get_order_status" and
-              calls[0]["function"]["arguments"].get("order_id") == expected)
+        ok = (len(calls) == 1
+              and calls[0]["function"]["name"] == "get_order_status"
+              and calls[0]["function"]["arguments"].get("order_id") == expected)
     passed += ok
     print("PASS" if ok else "FAIL", "|", question, "|", calls)
 
@@ -173,12 +279,21 @@ python tools_test.py llama3.2:3b-instruct-q4_K_M
 python tools_test.py llama3.2:3b-instruct-q8_0
 ```
 
-**Step 3.3:** Create `json_test.py` to check structured output. This asks for JSON and validates it:
+**Step 3.3:** Create `json_test.py`. It tests structured output in two modes, because they measure different things:
+
+- **prompt mode:** you ask for JSON in the prompt, and the model must obey on its own.
+- **schema mode:** you pass a JSON schema, and Ollama constrains the output to match it.
+
+Each answer is scored twice: **valid** (parses and matches the schema) and **correct** (the labels are the right ones).
 
 ```python
-import sys, json, ollama
+import sys
+import json
+import ollama
 
 model = sys.argv[1]
+mode = sys.argv[2] if len(sys.argv) > 2 else "prompt"   # "prompt" or "schema"
+
 schema = {
     "type": "object",
     "properties": {
@@ -187,44 +302,73 @@ schema = {
     },
     "required": ["sentiment", "urgent"],
 }
+
+# (review text, expected sentiment, expected urgent)
 reviews = [
-    "Love it, works perfectly!",
-    "This is the third time it broke. I need a replacement TODAY.",
-    "It arrived on Tuesday.",
-    "Terrible quality, but no rush on a refund.",
-    "Fantastic service and fast delivery.",
+    ("Love it, works perfectly!", "positive", False),
+    ("This is the third time it broke. I need a replacement TODAY.", "negative", True),
+    ("It arrived on Tuesday.", "neutral", False),
+    ("Terrible quality, but no rush on a refund.", "negative", False),
+    ("Fantastic service and fast delivery.", "positive", False),
 ]
 
-valid = 0
-for text in reviews:
-    r = ollama.chat(model=model, format=schema, options={"temperature": 0},
-                    messages=[{"role": "user",
-                               "content": f"Classify this review as JSON: {text}"}])
-    try:
-        data = json.loads(r["message"]["content"])
-        ok = data.get("sentiment") in schema["properties"]["sentiment"]["enum"] \
-             and isinstance(data.get("urgent"), bool)
-    except Exception:
-        ok = False
-    valid += ok
-    print("VALID" if ok else "INVALID", "|", text, "|", r["message"]["content"])
+instruction = (
+    "Classify this customer review. Reply with ONLY a JSON object with keys "
+    '"sentiment" (positive, negative or neutral) and "urgent" (true or false).\n\n'
+    "Review: "
+)
 
-print(f"{valid}/{len(reviews)} valid")
+valid = correct = 0
+for text, exp_sentiment, exp_urgent in reviews:
+    extra = {"format": schema} if mode == "schema" else {}
+    r = ollama.chat(model=model, options={"temperature": 0},
+                    messages=[{"role": "user", "content": instruction + text}],
+                    **extra)
+    raw = r["message"]["content"]
+    try:
+        data = json.loads(raw)
+        is_valid = (data.get("sentiment") in schema["properties"]["sentiment"]["enum"]
+                    and isinstance(data.get("urgent"), bool))
+    except Exception:
+        data, is_valid = {}, False
+    is_correct = (is_valid
+                  and data["sentiment"] == exp_sentiment
+                  and data["urgent"] == exp_urgent)
+    valid += is_valid
+    correct += is_correct
+    print("VALID  " if is_valid else "INVALID", "|",
+          "CORRECT" if is_correct else "WRONG  ", "|", text, "|", raw)
+
+print(f"{valid}/{len(reviews)} valid, {correct}/{len(reviews)} correct  (mode: {mode})")
 ```
+
+> The `format` option (structured outputs) needs a reasonably recent Ollama and Python client. If you get an error about `format`, update Ollama by re-running the install script from Step 0.3, and run `pip install --upgrade ollama`.
+
+**Step 3.4:** Run all four combinations.
 
 ```bash
-python json_test.py llama3.2:3b-instruct-q4_K_M
-python json_test.py llama3.2:3b-instruct-q8_0
+python json_test.py llama3.2:3b-instruct-q4_K_M prompt
+python json_test.py llama3.2:3b-instruct-q4_K_M schema
+python json_test.py llama3.2:3b-instruct-q8_0 prompt
+python json_test.py llama3.2:3b-instruct-q8_0 schema
 ```
 
-**Step 3.4:** Record the scores.
+**Step 3.5:** Record the scores.
 
 | Test | Q4 | Q8 |
 | --- | --- | --- |
 | Tool-call test (out of 4) |  |  |
-| JSON schema test (out of 5) |  |  |
+| JSON, prompt mode: valid (out of 5) |  |  |
+| JSON, prompt mode: correct (out of 5) |  |  |
+| JSON, schema mode: valid (out of 5) |  |  |
+| JSON, schema mode: correct (out of 5) |  |  |
 
-**Reflection:** Did either build fail a case? Check whether the failure was a wrong tool, a wrong argument, an unneeded tool call, or invalid JSON. Five or ten test cases are a very small sample, so what would you do to get trustworthy numbers?
+**Reflection:**
+- Did either build fail a case? Check whether the failure was a wrong tool, a wrong argument, an unneeded tool call, or invalid JSON.
+- Compare prompt mode with schema mode. Why is "valid" so much easier to achieve in schema mode? Does schema mode also guarantee "correct"? (Constraining the format forces the structure, not the judgement.)
+- Five or ten test cases are a very small sample. What would you do to get trustworthy numbers?
+
+---
 
 ## Part 4: Model-selection workshop (20 min)
 
@@ -252,6 +396,8 @@ Work in pairs. Use your measurements and the selection framework from Section 5.
 
 **Step 4.5:** Present your decision to another pair and compare reasoning.
 
+---
+
 ## Deliverable
 
 Submit a short write-up (one page) containing:
@@ -260,18 +406,26 @@ Submit a short write-up (one page) containing:
 - Your completed decision matrix from Part 4.
 - A paragraph answering: *When is a quantised small model the right choice for an agent, and when is it not?*
 
+---
+
 ## Troubleshooting (debugging practice)
 
 Use these as opportunities to practise diagnosis. Try to identify the cause yourself before reading the hint.
 
 | Symptom | Hint |
 | --- | --- |
-| `connection refused` from Python | The Ollama service is not running. Start it with `ollama serve` or open the Ollama app. |
-| Model not found | The tag is wrong or not pulled. Compare with `ollama list` and the Ollama library page. |
-| Very slow responses or the machine freezes | The model is too large for free memory and is swapping. Use the 1B model or close other applications. |
+| `connection refused` from Python, or "Cannot connect to Ollama" | The Ollama service is not running. Check `sudo systemctl status ollama` and start it with `sudo systemctl start ollama` (or run `ollama serve` after stopping the service). |
+| Model not found, or an HTTP 404 error | The tag is wrong or not pulled. Compare with `ollama list` and the Ollama library page, then re-run `ollama pull`. |
+| First request is very slow or seems to hang | The model may be loading for the first time. Wait 30 to 60 seconds, or pre-warm it with `ollama run <model> "hello"`. |
+| Very slow responses or the machine freezes | The model is too large for free memory and is swapping. Use the 1B model, close other applications, and check with `free -h` and `htop`. |
+| `pip: command not found` | Run `sudo apt install -y python3-pip`. |
+| `(lab-env)` does not appear after activation | Re-create the environment: `python3 -m venv lab-env --clear`, then `source lab-env/bin/activate`. |
 | `KeyError: 'eval_count'` | Print the full response object and check the field names for your client version. |
 | Tool test returns no `tool_calls` | Confirm the model supports tools, and check that your `tools` list matches the example format. |
+| Error about `format` in `json_test.py` | Ollama or the Python client is too old for structured outputs. Update both (see the note under Step 3.3). |
 | Results differ between runs | Confirm `temperature` is 0. Some small variation can still occur. |
+
+---
 
 ## Optional extensions
 
@@ -280,9 +434,38 @@ Use these as opportunities to practise diagnosis. Try to identify the cause your
 - Increase the prompt length with a long pasted document and observe how latency and memory change, relating this to the KV cache.
 - Enlarge the tool and JSON test sets to 30 or more cases and report pass rates.
 
+---
+
 ## Cleanup
 
 ```bash
 ollama rm llama3.2:3b-instruct-q4_K_M
 ollama rm llama3.2:3b-instruct-q8_0
+deactivate                      # leave the Python environment
 ```
+
+---
+
+## Instructor notes
+
+*Remove this section before sharing the lab with learners.*
+
+**Part 1: expected predictions (3B model, weights only)**
+
+| Precision | Bytes per parameter | Expected prediction |
+| --- | --- | --- |
+| FP16 | 2 | about 6 GB |
+| INT8 (Q8) | 1 | about 3 GB |
+| INT4 (Q4) | 0.5 | about 1.5 GB |
+
+Real downloads are typically larger than these (roughly 2 GB for Q4_K_M and 3.4 GB for Q8_0), because the model has slightly more than 3 billion parameters, Q4_K_M averages a little over 4 bits per weight, and some layers stay at higher precision. Check the real sizes on the day, since they can change between releases.
+
+**Part 2 and 3: what to expect (hedged, verify on your hardware)**
+- Q4 is usually faster and smaller than Q8, but the size of the speed gain varies a lot with hardware, especially on CPU-only machines.
+- Quality differences between Q4 and Q8 at 3B are often small on casual prompts, and may show up first in the tool-call and prompt-mode JSON tests. Do not promise learners a specific outcome. If both builds pass everything, use that to discuss why a larger and harder test set is needed.
+- Schema mode should make "valid" near 100% for both builds. The "correct" score is where differences can still appear. This is the key teaching point of Step 3.3.
+
+**Part 4: discussion points**
+- The larger hosted API model fails the data-governance requirement outright, which is why constraints are applied before comparing capability.
+- Between Q4 and Q8, the trade is memory and speed against possible reliability. Link this to the learners' own measurements.
+- A strong answer names what to test next, and may propose routing routine questions to a small model and hard cases to a larger self-hosted model.
