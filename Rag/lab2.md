@@ -9,71 +9,38 @@
 - See cases where some metrics look good while others reveal problems
 - Use results to improve the prompt and generation settings, then re-measure
 
+## How this lab works
+
+Each step creates a Python file with a `tee` command, then runs it. Run everything from inside `novahome_eval/` with your virtual environment active, after finishing Lab 1 (it creates `lab1_common.py` and the CSV files this lab scores).
+
+> **Running in Jupyter?** Put `%%bash` on the first line of a cell for the `tee` blocks, and use `!python script_name.py` to run a script. The `'EOF'` quotes stop the shell from expanding characters inside the code, and `> /dev/null` hides the echo that `tee` prints. On Windows, use WSL or Git Bash.
+
+| File created | Purpose |
+|---|---|
+| `lab2_metrics_common.py` | Loads the metrics and defines `score_generation()` |
+| `lab2_closed_answer.py` | Accuracy and Exact Match for intent classification |
+| `lab2_generation_metrics.py` | BLEU, ROUGE, METEOR, BERTScore on the marketing outputs |
+| `lab2_metric_disagreement.py` | Hand-written candidates that show where metrics disagree |
+| `lab2_prompt_v2.py` | Improved prompt, re-scoring and rule checks |
+
 ---
 
-## 2.1 Load the metrics
+## 2.1 Shared metric helpers
 
-```python
-import evaluate, nltk
-import numpy as np
+```bash
+tee lab2_metrics_common.py > /dev/null << 'EOF'
+import evaluate
+import nltk
 import pandas as pd
 
 for pkg in ["wordnet", "punkt", "punkt_tab", "omw-1.4"]:
     nltk.download(pkg, quiet=True)
 
-bleu       = evaluate.load("bleu")
-rouge      = evaluate.load("rouge")
-meteor     = evaluate.load("meteor")
-bertscore  = evaluate.load("bertscore")
-exact      = evaluate.load("exact_match")
-```
+bleu = evaluate.load("bleu")
+rouge = evaluate.load("rouge")
+meteor = evaluate.load("meteor")
+bertscore = evaluate.load("bertscore")
 
-> The first load downloads files. This is why we do it before the session.
-
-## 2.2 Closed-answer metrics: Accuracy and Exact Match
-
-```python
-df_intent = pd.read_csv("outputs/lab1_intent.csv")
-
-def normalise(s):
-    return str(s).strip().lower().strip(".!\"' ")
-
-preds = [p for p in df_intent["prediction"]]
-refs  = [l for l in df_intent["label"]]
-
-# Strict Exact Match on the raw output
-em_raw = exact.compute(predictions=preds, references=refs)["exact_match"]
-
-# Exact Match after light normalisation (case, punctuation, whitespace)
-em_norm = exact.compute(predictions=[normalise(p) for p in preds], references=refs)["exact_match"]
-
-# Accuracy = share of correct labels after normalisation
-accuracy = np.mean([normalise(p) == r for p, r in zip(preds, refs)])
-
-print(f"Exact match (raw):        {em_raw:.2f}")
-print(f"Exact match (normalised): {em_norm:.2f}")
-print(f"Accuracy:                 {accuracy:.2f}")
-df_intent.assign(correct=[normalise(p) == r for p, r in zip(preds, refs)])
-```
-
-**Interpretation**
-
-| Observation | What it means |
-|---|---|
-| Raw EM much lower than normalised EM | The model understands the task but fails the **output format**, a prompt or parser problem |
-| Normalised EM equals Accuracy here | Both measure exact label match; Accuracy is the usual term for classification |
-| Both low | Real classification errors; inspect the confusion (for example warranty vs returns) |
-
-For a fuller picture on classification, add per-class Precision/Recall (for example `sklearn.metrics.classification_report`).
-
----
-
-## 2.3 Open-ended generation metrics
-
-```python
-df = pd.read_csv("outputs/lab1_marketing_v1.csv")
-preds = df["prediction"].tolist()
-refs  = df["reference"].tolist()
 
 def score_generation(preds, refs):
     """Return a per-sample DataFrame of all generation metrics."""
@@ -92,14 +59,90 @@ def score_generation(preds, refs):
             "bertscore_f1": bs["f1"][i],
         })
     return pd.DataFrame(rows)
+EOF
+```
+
+> The first run downloads metric files and the BERTScore model. This is why we do it before the session.
+
+## 2.2 Closed-answer metrics: Accuracy and Exact Match
+
+```bash
+tee lab2_closed_answer.py > /dev/null << 'EOF'
+import evaluate
+import numpy as np
+import pandas as pd
+
+exact = evaluate.load("exact_match")
+df_intent = pd.read_csv("outputs/lab1_intent.csv")
+
+
+def normalise(s):
+    return str(s).strip().lower().strip(".!\"' ")
+
+
+preds = df_intent["prediction"].tolist()
+refs = df_intent["label"].tolist()
+
+# Strict Exact Match on the raw output
+em_raw = exact.compute(predictions=preds, references=refs)["exact_match"]
+
+# Exact Match after light normalisation (case, punctuation, whitespace)
+em_norm = exact.compute(predictions=[normalise(p) for p in preds], references=refs)["exact_match"]
+
+# Accuracy = share of correct labels after normalisation
+accuracy = np.mean([normalise(p) == r for p, r in zip(preds, refs)])
+
+print(f"Exact match (raw):        {em_raw:.2f}")
+print(f"Exact match (normalised): {em_norm:.2f}")
+print(f"Accuracy:                 {accuracy:.2f}\n")
+
+df_intent["correct"] = [normalise(p) == r for p, r in zip(preds, refs)]
+print(df_intent.to_string(index=False))
+df_intent.to_csv("outputs/lab2_intent_scored.csv", index=False)
+EOF
+```
+
+```bash
+python lab2_closed_answer.py
+```
+
+**Interpretation**
+
+| Observation | What it means |
+|---|---|
+| Raw EM much lower than normalised EM | The model understands the task but fails the **output format**, a prompt or parser problem |
+| Normalised EM equals Accuracy here | Both measure exact label match; Accuracy is the usual term for classification |
+| Both low | Real classification errors; inspect the confusion (for example warranty vs returns) |
+
+For a fuller picture on classification, add per-class Precision/Recall (for example `sklearn.metrics.classification_report`).
+
+---
+
+## 2.3 Open-ended generation metrics
+
+```bash
+tee lab2_generation_metrics.py > /dev/null << 'EOF'
+import pandas as pd
+from lab2_metrics_common import score_generation
+
+df = pd.read_csv("outputs/lab1_marketing_v1.csv")
+preds = df["prediction"].tolist()
+refs = df["reference"].tolist()
 
 scores_v1 = score_generation(preds, refs)
 report_v1 = pd.concat([df[["id", "prediction"]], scores_v1], axis=1)
-report_v1.round(3)
+report_v1.to_csv("outputs/lab2_scores_v1.csv", index=False)
+
+pd.set_option("display.width", 160)
+print("Per-sample scores:")
+print(report_v1.drop(columns="prediction").round(3).to_string(index=False))
+print("\nMean scores:")
+print(scores_v1.mean().round(3))
+EOF
 ```
 
-```python
-print(scores_v1.mean().round(3))
+```bash
+python lab2_generation_metrics.py
 ```
 
 ### How to read each score
@@ -122,23 +165,35 @@ print(scores_v1.mean().round(3))
 
 Run these hand-written candidates against one reference to see what each metric rewards.
 
-```python
+```bash
+tee lab2_metric_disagreement.py > /dev/null << 'EOF'
+import pandas as pd
+from lab2_metrics_common import score_generation
+
 reference = "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 2 hours."
 
 candidates = {
-  "A. Near copy":
-     "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 2 hours!",
-  "B. Good paraphrase":
-     "Run the NovaBrew from your phone and enjoy tea that stays hot for two hours.",
-  "C. Fluent but WRONG fact":
-     "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 8 hours.",
-  "D. Off-topic":
-     "Discover the NovaChef Air Fryer with eight handy presets for quick dinners.",
+    "A. Near copy":
+        "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 2 hours!",
+    "B. Good paraphrase":
+        "Run the NovaBrew from your phone and enjoy tea that stays hot for two hours.",
+    "C. Fluent but WRONG fact":
+        "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 8 hours.",
+    "D. Off-topic":
+        "Discover the NovaChef Air Fryer with eight handy presets for quick dinners.",
 }
 
 demo = score_generation(list(candidates.values()), [reference] * len(candidates))
 demo.insert(0, "candidate", list(candidates.keys()))
-demo.round(3)
+demo.to_csv("outputs/lab2_metric_disagreement.csv", index=False)
+
+pd.set_option("display.width", 160)
+print(demo.round(3).to_string(index=False))
+EOF
+```
+
+```bash
+python lab2_metric_disagreement.py
 ```
 
 **What learners should notice**
@@ -169,11 +224,17 @@ Hypotheses from our reading of the outputs:
 - Temperature 0.7 causes variation, so try 0.2.
 - The model ignores the style of our approved copy, so add **few-shot examples**.
 
-```python
-from langchain_core.prompts import ChatPromptTemplate
+```bash
+tee lab2_prompt_v2.py > /dev/null << 'EOF'
 import json
+import pandas as pd
+from langchain_core.prompts import ChatPromptTemplate
+from lab1_common import make_chain
+from lab2_metrics_common import score_generation
 
 marketing_eval = json.load(open("data/marketing_eval.json"))
+df_v1 = pd.read_csv("outputs/lab1_marketing_v1.csv")
+refs = df_v1["reference"].tolist()
 
 PROMPT_V2 = ChatPromptTemplate.from_messages([
     ("system",
@@ -187,31 +248,56 @@ PROMPT_V2 = ChatPromptTemplate.from_messages([
     ("human", "Write a {format} for this brief:\n{brief}"),
 ])
 
+
 def generate(prompt, temperature):
-    chain = make_chain(prompt, temperature=temperature)   # defined in Lab 1
+    chain = make_chain(prompt, temperature=temperature)
     return [chain.invoke({"format": i["format"], "max_words": i["max_words"], "brief": i["brief"]}).strip()
             for i in marketing_eval]
 
+
 preds_v2 = generate(PROMPT_V2, temperature=0.2)
+scores_v1 = score_generation(df_v1["prediction"].tolist(), refs)
 scores_v2 = score_generation(preds_v2, refs)
-```
 
-> The few-shot examples use briefs m3 and m4 from the evaluation set, so scores on those items will be **inflated** (data leakage). Compare on m1, m2 and m5 only, or use separate examples in real projects.
+pd.DataFrame({"id": df_v1["id"], "prediction_v2": preds_v2}).to_csv("outputs/lab2_v2_predictions.csv", index=False)
 
-```python
+# Comparison on all items
 cmp = pd.DataFrame({"v1 (T=0.7, zero-shot)": scores_v1.mean(),
-                    "v2 (T=0.2, few-shot)":  scores_v2.mean()}).round(3)
+                    "v2 (T=0.2, few-shot)": scores_v2.mean()}).round(3)
 cmp["delta"] = (cmp.iloc[:, 1] - cmp.iloc[:, 0]).round(3)
-cmp
-```
+print("All items:")
+print(cmp, "\n")
 
-```python
 # Honest comparison: exclude the leaked items (indices 2 and 3 = m3, m4)
 keep = [0, 1, 4]
-pd.DataFrame({"v1": scores_v1.iloc[keep].mean(), "v2": scores_v2.iloc[keep].mean()}).round(3)
+honest = pd.DataFrame({"v1": scores_v1.iloc[keep].mean(), "v2": scores_v2.iloc[keep].mean()}).round(3)
+print("Excluding leaked items m3 and m4:")
+print(honest, "\n")
+cmp.to_csv("outputs/lab2_v1_vs_v2.csv")
+
+# Rule checks on v2 (a prompt change can raise similarity but break a rule)
+rules = pd.DataFrame({
+    "id": df_v1["id"],
+    "prediction_v2": preds_v2,
+    "pred_words": [len(p.split()) for p in preds_v2],
+    "max_words": df_v1["max_words"],
+})
+rules["within_limit"] = rules["pred_words"] <= rules["max_words"]
+rules["says_cheap"] = rules["prediction_v2"].str.contains("cheap", case=False)
+rules["health_claim"] = rules["prediction_v2"].str.contains(
+    r"\b(cure|treat|prevent|allerg|flu|asthma)", case=False, regex=True)
+print("Rule checks on v2:")
+print(rules[["id", "pred_words", "within_limit", "says_cheap", "health_claim"]].to_string(index=False))
+EOF
 ```
 
-Re-run the rule checks from Lab 1 on `preds_v2` (word limit, banned words, health claims). **A prompt change can raise similarity scores while breaking a rule**, so always check both.
+```bash
+python lab2_prompt_v2.py
+```
+
+> The few-shot examples use briefs m3 and m4 from the evaluation set, so scores on those items will be **inflated** (data leakage). The script therefore also prints a comparison on m1, m2 and m5 only. In real projects, use separate examples.
+
+**A prompt change can raise similarity scores while breaking a rule**, so always read the rule-check table alongside the metric table.
 
 ---
 
@@ -232,6 +318,16 @@ Re-run the rule checks from Lab 1 on `preds_v2` (word limit, banned words, healt
 
 ---
 
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---|---|
+| `ModuleNotFoundError: lab1_common` | Run Lab 1 first, and run scripts from `novahome_eval/` |
+| `FileNotFoundError: outputs/lab1_marketing_v1.csv` | Run `python lab1_generate_marketing.py` |
+| `LookupError` mentioning `wordnet` or `punkt_tab` | NLTK data is missing; re-run a script once with internet access |
+| BERTScore or `evaluate.load` hangs or fails | First use needs internet to download files; pre-download before the session |
+| `SyntaxError` right after pasting | The closing `EOF` must be alone on its line with no leading spaces |
+
 ## AI copilot prompts
 
 - *"My BLEU score is 0.0 for a short sentence even though it looks very similar to the reference. Explain why and how smoothing helps."*
@@ -240,10 +336,11 @@ Re-run the rule checks from Lab 1 on `preds_v2` (word limit, banned words, healt
 
 ## Learner challenge
 
-Write one new candidate that scores **higher on BLEU than candidate B but is worse marketing copy**. What does that tell you about optimising for a metric?
+Add one new candidate to `lab2_metric_disagreement.py` that scores **higher on BLEU than candidate B but is worse marketing copy**, then re-run it. What does that tell you about optimising for a metric?
 
 ## Checkpoint
 
+- [ ] The five Lab 2 files exist (`lab2_metrics_common.py`, `lab2_closed_answer.py`, `lab2_generation_metrics.py`, `lab2_metric_disagreement.py`, `lab2_prompt_v2.py`)
 - [ ] You have a per-sample score table and a mean-score table for v1
 - [ ] You can explain why candidate C is dangerous
 - [ ] You compared v1 and v2 and checked rule compliance
