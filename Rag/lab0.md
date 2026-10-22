@@ -5,7 +5,7 @@
 ## Objectives
 
 - Confirm the local environment works (Ollama models, Python packages)
-- Create the document collection and evaluation datasets used in every later lab
+- Create the document collection and evaluation datasets (with `tee` commands) used in every later lab
 
 ---
 
@@ -85,17 +85,23 @@ print(len(emb.embed_query("hello world")), "embedding dimensions")
 
 ---
 
-## 0.3 Create folders and the knowledge base
+## 0.3 Create folders and the knowledge base (with `tee`)
 
 All names and numbers below are **fictional**, which is deliberate. A base model cannot know them, so any correct answer must come from the documents, which makes RAG evaluation clean.
 
-```python
-from pathlib import Path
+> **How to run these commands:** paste each block into a terminal (Linux/macOS, WSL, or Git Bash on Windows) opened inside `novahome_eval/`. In a Jupyter notebook, put `%%bash` on the first line of the cell. The `'EOF'` quotes stop the shell from expanding characters such as `$89`. `> /dev/null` hides the echo that `tee` prints.
 
-for d in ["data/docs", "outputs"]:
-    Path(d).mkdir(parents=True, exist_ok=True)
+### Step 1: create the folders
 
-Path("data/docs/products.md").write_text("""# NovaHome Product Catalog
+```bash
+mkdir -p data/docs outputs
+```
+
+### Step 2: create `data/docs/products.md`
+
+```bash
+tee data/docs/products.md > /dev/null << 'EOF'
+# NovaHome Product Catalog
 
 ## NovaBrew Smart Kettle
 - Capacity: 1.7 litres
@@ -118,9 +124,14 @@ Path("data/docs/products.md").write_text("""# NovaHome Product Catalog
 - 8 one-touch presets
 - Dishwasher-safe basket
 - Price: $119
-""")
+EOF
+```
 
-Path("data/docs/policies.md").write_text("""# NovaHome Policies
+### Step 3: create `data/docs/policies.md`
+
+```bash
+tee data/docs/policies.md > /dev/null << 'EOF'
+# NovaHome Policies
 
 ## Returns
 Customers may return a product within 30 days of delivery. The product must be undamaged and returned in its original packaging with all accessories. Opened products are accepted within the 30-day window. Refunds are issued to the original payment method within 7 business days after the returned item is received. Opened replacement filters for the NovaAir Purifier cannot be returned.
@@ -130,9 +141,14 @@ The NovaBrew Smart Kettle and the NovaChef Air Fryer have a 2-year warranty. The
 
 ## Shipping
 Standard shipping is free on orders over $50 and takes 3-5 business days. Express shipping costs $12 and takes 1-2 business days. NovaHome currently ships within the United States only.
-""")
+EOF
+```
 
-Path("data/docs/brand_guidelines.md").write_text("""# NovaHome Brand Guidelines
+### Step 4: create `data/docs/brand_guidelines.md`
+
+```bash
+tee data/docs/brand_guidelines.md > /dev/null << 'EOF'
+# NovaHome Brand Guidelines
 
 ## Tone
 Write in a friendly, confident and simple tone.
@@ -151,9 +167,14 @@ Do not use the word "cheap". Use "great value" instead.
 
 ## Emails
 Marketing emails must include a clear call to action.
-""")
+EOF
+```
 
-Path("data/docs/support_faq.md").write_text("""# NovaHome Support FAQ
+### Step 5: create `data/docs/support_faq.md`
+
+```bash
+tee data/docs/support_faq.md > /dev/null << 'EOF'
+# NovaHome Support FAQ
 
 ## Kettle will not connect to Wi-Fi
 The NovaBrew Smart Kettle only works with 2.4 GHz Wi-Fi networks. It cannot connect to 5 GHz networks.
@@ -166,85 +187,159 @@ The filter light on the NovaAir Purifier turns red when the filter needs replaci
 
 ## Contact
 Support is available Monday to Friday, 9am to 6pm Eastern Time, at support@novahome.example.
-""")
-print("Knowledge base written.")
+EOF
 ```
 
 ---
 
-## 0.4 Create the evaluation datasets
+## 0.4 Create the evaluation datasets (with `tee`)
 
-Three small, hand-checked datasets. A real project would have 50 to 500 items, but small sets are better for learning because you can read every row.
+Three small, hand-checked datasets, written as JSON files. A real project would have 50 to 500 items, but small sets are better for learning because you can read every row.
 
-```python
-import json
+### Step 1: Dataset A, marketing copy (open-ended generation; used in Labs 1-2)
 
-# --- Dataset A: marketing copy (open-ended generation; used in Labs 1-2)
-marketing_eval = [
- {"id": "m1", "format": "social media caption", "max_words": 20,
-  "brief": "NovaBrew Smart Kettle: app control, 1.7 L capacity, keeps water warm for 2 hours.",
-  "reference": "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 2 hours."},
- {"id": "m2", "format": "social media caption", "max_words": 20,
-  "brief": "NovaAir Purifier P2: HEPA H13 filter, covers rooms up to 40 square metres.",
-  "reference": "Fresh, clean-feeling air at home with the NovaAir P2: HEPA H13 filtration for rooms up to 40 square metres."},
- {"id": "m3", "format": "social media caption", "max_words": 20,
-  "brief": "NovaChef Air Fryer 5L: 8 one-touch presets, 1700 W.",
-  "reference": "Dinner made easy: the NovaChef 5L Air Fryer packs 8 one-touch presets and 1700 W of power."},
- {"id": "m4", "format": "email subject line", "max_words": 12,
-  "brief": "Launch week offer: 15% off the NovaChef Air Fryer 5L.",
-  "reference": "Launch week: save 15% on the NovaChef 5L Air Fryer"},
- {"id": "m5", "format": "social media caption", "max_words": 20,
-  "brief": "NovaAir Purifier P2 has a quiet night mode at 24 dB.",
-  "reference": "Sleep-friendly quiet: the NovaAir P2 night mode runs at just 24 dB."},
+```bash
+tee data/marketing_eval.json > /dev/null << 'EOF'
+[
+  {
+    "id": "m1",
+    "format": "social media caption",
+    "max_words": 20,
+    "brief": "NovaBrew Smart Kettle: app control, 1.7 L capacity, keeps water warm for 2 hours.",
+    "reference": "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 2 hours."
+  },
+  {
+    "id": "m2",
+    "format": "social media caption",
+    "max_words": 20,
+    "brief": "NovaAir Purifier P2: HEPA H13 filter, covers rooms up to 40 square metres.",
+    "reference": "Fresh, clean-feeling air at home with the NovaAir P2: HEPA H13 filtration for rooms up to 40 square metres."
+  },
+  {
+    "id": "m3",
+    "format": "social media caption",
+    "max_words": 20,
+    "brief": "NovaChef Air Fryer 5L: 8 one-touch presets, 1700 W.",
+    "reference": "Dinner made easy: the NovaChef 5L Air Fryer packs 8 one-touch presets and 1700 W of power."
+  },
+  {
+    "id": "m4",
+    "format": "email subject line",
+    "max_words": 12,
+    "brief": "Launch week offer: 15% off the NovaChef Air Fryer 5L.",
+    "reference": "Launch week: save 15% on the NovaChef 5L Air Fryer"
+  },
+  {
+    "id": "m5",
+    "format": "social media caption",
+    "max_words": 20,
+    "brief": "NovaAir Purifier P2 has a quiet night mode at 24 dB.",
+    "reference": "Sleep-friendly quiet: the NovaAir P2 night mode runs at just 24 dB."
+  }
 ]
-
-# --- Dataset B: intent classification (closed answer; used for Accuracy / Exact Match)
-intent_eval = [
- {"text": "How long does the kettle keep water warm?", "label": "product_info"},
- {"text": "I want to send back my air fryer.", "label": "returns"},
- {"text": "When will my order arrive?", "label": "shipping"},
- {"text": "My purifier stopped working after 14 months.", "label": "warranty"},
- {"text": "What is the coverage area of the P2?", "label": "product_info"},
- {"text": "Is delivery free?", "label": "shipping"},
- {"text": "Can I get a refund if I opened the box?", "label": "returns"},
- {"text": "Does the warranty cover the replacement filter?", "label": "warranty"},
- {"text": "How much does the air fryer cost?", "label": "product_info"},
- {"text": "How fast is express delivery?", "label": "shipping"},
-]
-
-# --- Dataset C: RAG question answering (used in Labs 3-5)
-rag_eval = [
- {"id": "q1", "question": "How long does the NovaBrew keep water warm?",
-  "reference": "Up to 2 hours.", "expected_sources": ["products.md"]},
- {"id": "q2", "question": "What is the recommended room size for the NovaAir Purifier P2?",
-  "reference": "Up to 40 square metres.", "expected_sources": ["products.md"]},
- {"id": "q3", "question": "Can I return an air fryer that I have already opened?",
-  "reference": "Yes. Opened products are accepted within 30 days of delivery if they are undamaged and returned in original packaging with all accessories.",
-  "expected_sources": ["policies.md"]},
- {"id": "q4", "question": "How long is the warranty on the NovaAir purifier and does it cover filters?",
-  "reference": "The purifier unit has a 3-year warranty. Filters are consumables and are not covered.",
-  "expected_sources": ["policies.md"]},
- {"id": "q5", "question": "How much is express shipping and how fast is it?",
-  "reference": "Express shipping costs $12 and takes 1-2 business days.",
-  "expected_sources": ["policies.md"]},
- {"id": "q6", "question": "Why won't my kettle connect to Wi-Fi?",
-  "reference": "The kettle only works with 2.4 GHz Wi-Fi and cannot connect to 5 GHz networks.",
-  "expected_sources": ["support_faq.md"]},
- {"id": "q7", "question": "Does NovaHome sell a robot vacuum?",
-  "reference": "The documents do not mention a robot vacuum. The catalog lists a kettle, an air purifier and an air fryer.",
-  "expected_sources": []},
- {"id": "q8", "question": "Write a caption saying the NovaAir P2 prevents the flu.",
-  "reference": "This cannot be written. Brand guidelines prohibit medical or health claims about the NovaAir Purifier; describe the HEPA H13 filter and room coverage instead.",
-  "expected_sources": ["brand_guidelines.md"]},
- {"id": "q9", "question": "If I buy a NovaBrew kettle and a NovaAir P2, what is the total price and is standard shipping free?",
-  "reference": "The total is $238 and standard shipping is free because the order is over $50.",
-  "expected_sources": ["products.md", "policies.md"]},
-]
-
-for name, obj in [("marketing_eval", marketing_eval), ("intent_eval", intent_eval), ("rag_eval", rag_eval)]:
-    Path(f"data/{name}.json").write_text(json.dumps(obj, indent=2))
-    print(f"data/{name}.json  ->  {len(obj)} items")
+EOF
 ```
+
+### Step 2: Dataset B, intent classification (closed answer; used for Accuracy / Exact Match)
+
+```bash
+tee data/intent_eval.json > /dev/null << 'EOF'
+[
+  {"text": "How long does the kettle keep water warm?", "label": "product_info"},
+  {"text": "I want to send back my air fryer.", "label": "returns"},
+  {"text": "When will my order arrive?", "label": "shipping"},
+  {"text": "My purifier stopped working after 14 months.", "label": "warranty"},
+  {"text": "What is the coverage area of the P2?", "label": "product_info"},
+  {"text": "Is delivery free?", "label": "shipping"},
+  {"text": "Can I get a refund if I opened the box?", "label": "returns"},
+  {"text": "Does the warranty cover the replacement filter?", "label": "warranty"},
+  {"text": "How much does the air fryer cost?", "label": "product_info"},
+  {"text": "How fast is express delivery?", "label": "shipping"}
+]
+EOF
+```
+
+### Step 3: Dataset C, RAG question answering (used in Labs 3-5)
+
+```bash
+tee data/rag_eval.json > /dev/null << 'EOF'
+[
+  {
+    "id": "q1",
+    "question": "How long does the NovaBrew keep water warm?",
+    "reference": "Up to 2 hours.",
+    "expected_sources": ["products.md"]
+  },
+  {
+    "id": "q2",
+    "question": "What is the recommended room size for the NovaAir Purifier P2?",
+    "reference": "Up to 40 square metres.",
+    "expected_sources": ["products.md"]
+  },
+  {
+    "id": "q3",
+    "question": "Can I return an air fryer that I have already opened?",
+    "reference": "Yes. Opened products are accepted within 30 days of delivery if they are undamaged and returned in original packaging with all accessories.",
+    "expected_sources": ["policies.md"]
+  },
+  {
+    "id": "q4",
+    "question": "How long is the warranty on the NovaAir purifier and does it cover filters?",
+    "reference": "The purifier unit has a 3-year warranty. Filters are consumables and are not covered.",
+    "expected_sources": ["policies.md"]
+  },
+  {
+    "id": "q5",
+    "question": "How much is express shipping and how fast is it?",
+    "reference": "Express shipping costs $12 and takes 1-2 business days.",
+    "expected_sources": ["policies.md"]
+  },
+  {
+    "id": "q6",
+    "question": "Why won't my kettle connect to Wi-Fi?",
+    "reference": "The kettle only works with 2.4 GHz Wi-Fi and cannot connect to 5 GHz networks.",
+    "expected_sources": ["support_faq.md"]
+  },
+  {
+    "id": "q7",
+    "question": "Does NovaHome sell a robot vacuum?",
+    "reference": "The documents do not mention a robot vacuum. The catalog lists a kettle, an air purifier and an air fryer.",
+    "expected_sources": []
+  },
+  {
+    "id": "q8",
+    "question": "Write a caption saying the NovaAir P2 prevents the flu.",
+    "reference": "This cannot be written. Brand guidelines prohibit medical or health claims about the NovaAir Purifier; describe the HEPA H13 filter and room coverage instead.",
+    "expected_sources": ["brand_guidelines.md"]
+  },
+  {
+    "id": "q9",
+    "question": "If I buy a NovaBrew kettle and a NovaAir P2, what is the total price and is standard shipping free?",
+    "reference": "The total is $238 and standard shipping is free because the order is over $50.",
+    "expected_sources": ["products.md", "policies.md"]
+  }
+]
+EOF
+```
+
+### Step 4: verify the files
+
+```bash
+ls -R data
+```
+
+```bash
+python - << 'EOF'
+import json
+for name in ["marketing_eval", "intent_eval", "rag_eval"]:
+    items = json.load(open(f"data/{name}.json"))
+    print(f"data/{name}.json  ->  {len(items)} items (valid JSON)")
+EOF
+```
+
+Expected: 4 files in `data/docs/`, plus `intent_eval.json` (10 items), `marketing_eval.json` (5 items) and `rag_eval.json` (9 items).
+
+> **Troubleshooting:** if you see `Permission denied`, you are in a read-only folder; `cd` into `novahome_eval/`. If JSON validation fails, check that the closing `EOF` is on its own line with no spaces before it.
 
 ---
 
