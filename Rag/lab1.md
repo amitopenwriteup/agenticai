@@ -1,161 +1,253 @@
-# Lab 1: Build the Non-RAG LLM Application (Marketing Assistant)
+# Lab 2: Scoring with Traditional NLP Metrics
 
-**Section:** 2 (first half) | **Time:** about 20 minutes | **Type:** Demonstration + guided coding
-
-## Business Context
-
-NovaHome's marketing team wants an assistant that drafts **social captions and email subject lines** from short product briefs.
-
-| Business objective | Implication for evaluation |
-|---|---|
-| Save copywriter time | Outputs must be usable with light editing |
-| Stay on-brand | Tone, length and vocabulary rules must be respected |
-| Never mislead customers | No invented specs, no health claims |
-
-Write down (as a group) what "good" means **before** choosing metrics. You will revisit this list in Lab 2.
+**Section:** 2 (second half) | **Time:** about 35 minutes | **Type:** Demonstration + guided coding
 
 ## Objectives
 
-- Build a prompt, model and parser chain with LangChain and a local Ollama model
-- Generate outputs for several representative inputs
-- Create the output table that later labs will score
-- Build a second, closed-answer task (intent classification) for Accuracy and Exact Match
+- Compute Accuracy, Exact Match, BLEU, ROUGE, METEOR and BERTScore
+- Interpret what each score does and does not tell you
+- See cases where some metrics look good while others reveal problems
+- Use results to improve the prompt and generation settings, then re-measure
 
 ---
 
-## 1.1 The generation chain
+## 2.1 Load the metrics
 
 ```python
-import json
+import evaluate, nltk
+import numpy as np
 import pandas as pd
-from langchain_ollama import ChatOllama
+
+for pkg in ["wordnet", "punkt", "punkt_tab", "omw-1.4"]:
+    nltk.download(pkg, quiet=True)
+
+bleu       = evaluate.load("bleu")
+rouge      = evaluate.load("rouge")
+meteor     = evaluate.load("meteor")
+bertscore  = evaluate.load("bertscore")
+exact      = evaluate.load("exact_match")
+```
+
+> The first load downloads files. This is why we do it before the session.
+
+## 2.2 Closed-answer metrics: Accuracy and Exact Match
+
+```python
+df_intent = pd.read_csv("outputs/lab1_intent.csv")
+
+def normalise(s):
+    return str(s).strip().lower().strip(".!\"' ")
+
+preds = [p for p in df_intent["prediction"]]
+refs  = [l for l in df_intent["label"]]
+
+# Strict Exact Match on the raw output
+em_raw = exact.compute(predictions=preds, references=refs)["exact_match"]
+
+# Exact Match after light normalisation (case, punctuation, whitespace)
+em_norm = exact.compute(predictions=[normalise(p) for p in preds], references=refs)["exact_match"]
+
+# Accuracy = share of correct labels after normalisation
+accuracy = np.mean([normalise(p) == r for p, r in zip(preds, refs)])
+
+print(f"Exact match (raw):        {em_raw:.2f}")
+print(f"Exact match (normalised): {em_norm:.2f}")
+print(f"Accuracy:                 {accuracy:.2f}")
+df_intent.assign(correct=[normalise(p) == r for p, r in zip(preds, refs)])
+```
+
+**Interpretation**
+
+| Observation | What it means |
+|---|---|
+| Raw EM much lower than normalised EM | The model understands the task but fails the **output format**, a prompt or parser problem |
+| Normalised EM equals Accuracy here | Both measure exact label match; Accuracy is the usual term for classification |
+| Both low | Real classification errors; inspect the confusion (for example warranty vs returns) |
+
+For a fuller picture on classification, add per-class Precision/Recall (for example `sklearn.metrics.classification_report`).
+
+---
+
+## 2.3 Open-ended generation metrics
+
+```python
+df = pd.read_csv("outputs/lab1_marketing_v1.csv")
+preds = df["prediction"].tolist()
+refs  = df["reference"].tolist()
+
+def score_generation(preds, refs):
+    """Return a per-sample DataFrame of all generation metrics."""
+    rows = []
+    # BERTScore in one batch (loading the model per call is slow)
+    bs = bertscore.compute(predictions=preds, references=refs,
+                           lang="en", model_type="distilbert-base-uncased")
+    for i, (p, r) in enumerate(zip(preds, refs)):
+        b = bleu.compute(predictions=[p], references=[[r]], smooth=True)["bleu"]
+        rg = rouge.compute(predictions=[p], references=[r])
+        m = meteor.compute(predictions=[p], references=[r])["meteor"]
+        rows.append({
+            "bleu": b,
+            "rouge1": rg["rouge1"], "rouge2": rg["rouge2"], "rougeL": rg["rougeL"],
+            "meteor": m,
+            "bertscore_f1": bs["f1"][i],
+        })
+    return pd.DataFrame(rows)
+
+scores_v1 = score_generation(preds, refs)
+report_v1 = pd.concat([df[["id", "prediction"]], scores_v1], axis=1)
+report_v1.round(3)
+```
+
+```python
+print(scores_v1.mean().round(3))
+```
+
+### How to read each score
+
+| Metric | What it measures | Rough reading for short marketing copy* |
+|---|---|---|
+| **BLEU** | Precision of overlapping n-grams (1 to 4) with a brevity penalty | Below 0.2 is common even for good paraphrases |
+| **ROUGE-1/2** | Recall of unigrams/bigrams from the reference | ROUGE-1 above about 0.5 means substantial word reuse |
+| **ROUGE-L** | Longest common subsequence | Captures word order better than ROUGE-1 |
+| **METEOR** | Overlap with stemming, synonyms and word-order penalty | More forgiving than BLEU |
+| **BERTScore (F1)** | Cosine similarity of contextual embeddings | Often 0.85 to 0.95 for same-topic text, so look at *differences*, not absolute values |
+
+\*These are heuristics for this tiny dataset, not universal thresholds. Always compare against a baseline and against human judgement.
+
+> **Why BERTScore looks "high" everywhere:** embeddings of any same-domain English text are similar. Use `rescale_with_baseline=True` (with `lang="en"`) to spread scores out, or interpret the score only relative to other systems.
+
+---
+
+## 2.4 When metrics disagree: the demonstration set
+
+Run these hand-written candidates against one reference to see what each metric rewards.
+
+```python
+reference = "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 2 hours."
+
+candidates = {
+  "A. Near copy":
+     "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 2 hours!",
+  "B. Good paraphrase":
+     "Run the NovaBrew from your phone and enjoy tea that stays hot for two hours.",
+  "C. Fluent but WRONG fact":
+     "Meet the NovaBrew Smart Kettle: control it from your phone and keep your tea warm for 8 hours.",
+  "D. Off-topic":
+     "Discover the NovaChef Air Fryer with eight handy presets for quick dinners.",
+}
+
+demo = score_generation(list(candidates.values()), [reference] * len(candidates))
+demo.insert(0, "candidate", list(candidates.keys()))
+demo.round(3)
+```
+
+**What learners should notice**
+
+| Candidate | Expected pattern | Lesson |
+|---|---|---|
+| A | All metrics very high | Metrics reward copying |
+| B | BLEU/ROUGE low, METEOR/BERTScore higher | **Good output, penalised by lexical metrics** |
+| C | All metrics still high | **Metrics cannot detect a wrong fact** (2 hours vs 8 hours), which is why faithfulness and correctness metrics exist |
+| D | BERTScore still fairly high, others low | Same domain and style fools embedding metrics |
+
+> **Key message:** BLEU/ROUGE/METEOR/BERTScore measure *similarity to a reference*, not *truth*, *brand compliance* or *usefulness*. Use them as regression signals, not as quality guarantees.
+
+### Limitations of traditional metrics for open-ended generation
+
+1. Many valid outputs exist, but a reference covers one phrasing.
+2. They cannot verify facts.
+3. They ignore style rules, safety and tone.
+4. Short texts make n-gram metrics noisy (BLEU can be 0 with no 4-gram match).
+5. They need a human-written reference, which is expensive.
+
+---
+
+## 2.5 Use the results: improve the prompt and settings
+
+Hypotheses from our reading of the outputs:
+
+- Temperature 0.7 causes variation, so try 0.2.
+- The model ignores the style of our approved copy, so add **few-shot examples**.
+
+```python
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+import json
 
 marketing_eval = json.load(open("data/marketing_eval.json"))
 
-PROMPT_V1 = ChatPromptTemplate.from_messages([
+PROMPT_V2 = ChatPromptTemplate.from_messages([
     ("system",
      "You are a marketing copywriter for NovaHome Appliances. "
-     "Write in a friendly, confident tone. "
-     "Never exceed {max_words} words. "
-     "Do not make medical or health claims. "
-     "Reply with the copy only, no quotation marks and no explanations."),
+     "Friendly, confident, simple tone. Never exceed {max_words} words. "
+     "Mention the exact product name and one or two concrete specs from the brief. "
+     "Do NOT invent specs or make health claims. Reply with the copy only.\n\n"
+     "Examples of approved copy:\n"
+     "- Dinner made easy: the NovaChef 5L Air Fryer packs 8 one-touch presets and 1700 W of power.\n"
+     "- Launch week: save 15% on the NovaChef 5L Air Fryer"),
     ("human", "Write a {format} for this brief:\n{brief}"),
 ])
 
-def make_chain(prompt, temperature=0.7, model="llama3.2:3b"):
-    llm = ChatOllama(model=model, temperature=temperature)
-    return prompt | llm | StrOutputParser()
+from lab1_common import make_chain   # created in Lab 1
 
-chain_v1 = make_chain(PROMPT_V1, temperature=0.7)
+def generate(prompt, temperature):
+    chain = make_chain(prompt, temperature=temperature)
+    return [chain.invoke({"format": i["format"], "max_words": i["max_words"], "brief": i["brief"]}).strip()
+            for i in marketing_eval]
+
+preds_v2 = generate(PROMPT_V2, temperature=0.2)
+scores_v2 = score_generation(preds_v2, refs)
 ```
 
-**Explain while coding:**
-
-| Component | Role |
-|---|---|
-| `ChatPromptTemplate` | Turns structured inputs into a prompt, so changes to the prompt are versionable |
-| `ChatOllama` | Local model; `temperature` controls randomness |
-| `StrOutputParser` | Converts the model message into a plain string |
-| `|` (pipe) | LangChain Expression Language: chains the components |
-
-## 1.2 Generate outputs
+> The few-shot examples use briefs m3 and m4 from the evaluation set, so scores on those items will be **inflated** (data leakage). Compare on m1, m2 and m5 only, or use separate examples in real projects.
 
 ```python
-rows = []
-for item in marketing_eval:
-    out = chain_v1.invoke({
-        "format": item["format"], "max_words": item["max_words"], "brief": item["brief"]
-    }).strip()
-    rows.append({**item, "prediction": out})
-
-df_v1 = pd.DataFrame(rows)
-df_v1["pred_words"] = df_v1["prediction"].str.split().str.len()
-df_v1.to_csv("outputs/lab1_marketing_v1.csv", index=False)
-
-for r in rows:
-    print(f"[{r['id']}] {r['format']}")
-    print("  REF :", r["reference"])
-    print("  PRED:", r["prediction"], "\n")
+cmp = pd.DataFrame({"v1 (T=0.7, zero-shot)": scores_v1.mean(),
+                    "v2 (T=0.2, few-shot)":  scores_v2.mean()}).round(3)
+cmp["delta"] = (cmp.iloc[:, 1] - cmp.iloc[:, 0]).round(3)
+cmp
 ```
-
-## 1.3 Read the outputs before computing any metric
-
-Fill in this table by hand. This is **human evaluation**, the ground truth that automated metrics try to approximate.
-
-| id | On-brand? | Within word limit? | Any invented facts? | Would you publish it? |
-|----|-----------|-------------------|---------------------|-----------------------|
-| m1 | | | | |
-| m2 | | | | |
-| m3 | | | | |
-| m4 | | | | |
-| m5 | | | | |
-
-Quick automated check on a rule you *can* test:
 
 ```python
-df_v1["within_limit"] = df_v1["pred_words"] <= df_v1["max_words"]
-df_v1["says_cheap"] = df_v1["prediction"].str.contains("cheap", case=False)
-df_v1["health_claim"] = df_v1["prediction"].str.contains(r"\b(cure|treat|prevent|allerg|flu|asthma)", case=False, regex=True)
-print(df_v1[["id", "pred_words", "within_limit", "says_cheap", "health_claim"]])
+# Honest comparison: exclude the leaked items (indices 2 and 3 = m3, m4)
+keep = [0, 1, 4]
+pd.DataFrame({"v1": scores_v1.iloc[keep].mean(), "v2": scores_v2.iloc[keep].mean()}).round(3)
 ```
 
-> **Teaching point:** some of the most important quality criteria (word limit, banned words, forbidden claims) are **rule-based checks**, not similarity metrics. Real evaluation suites mix both.
+Re-run the rule checks from Lab 1 on `preds_v2` (word limit, banned words, health claims). **A prompt change can raise similarity scores while breaking a rule**, so always check both.
 
 ---
 
-## 1.4 A closed-answer task: intent classification
+## 2.6 Discussion
 
-Customer messages must be routed to the right team. Here there is exactly one right answer, so **Accuracy** and **Exact Match** are appropriate.
+1. Candidate C scored almost as well as A. What would you add to the pipeline to catch it?
+2. Which single metric would you put on a dashboard for the marketing team, and why do you still need human review?
+3. With only 5 examples, how much should we trust a 0.03 improvement?
 
-```python
-intent_eval = json.load(open("data/intent_eval.json"))
-LABELS = ["product_info", "returns", "shipping", "warranty"]
+<details>
+<summary>Suggested answers</summary>
 
-INTENT_PROMPT = ChatPromptTemplate.from_messages([
-    ("system",
-     "Classify the customer message into exactly one of: product_info, returns, shipping, warranty. "
-     "Reply with the label only, in lowercase, with no punctuation."),
-    ("human", "{text}"),
-])
-intent_chain = make_chain(INTENT_PROMPT, temperature=0.0)
+1. A fact-checking step against source data (in Part 2 of the session: faithfulness / answer correctness against retrieved context), or an LLM-as-judge with the brief as evidence.
+2. Probably BERTScore or ROUGE-L as a regression signal, plus rule-based compliance checks; human review catches tone and persuasiveness.
+3. Very little. Small samples and stochastic generation make small deltas noise. Use more items and repeated runs.
 
-rows = []
-for item in intent_eval:
-    pred = intent_chain.invoke({"text": item["text"]}).strip()
-    rows.append({**item, "prediction": pred})
-
-df_intent = pd.DataFrame(rows)
-df_intent.to_csv("outputs/lab1_intent.csv", index=False)
-df_intent
-```
-
-Look at any mismatches. Is the model wrong, or is the output **format** wrong (for example `"Returns."` instead of `returns`)? Evaluation must separate these two failure types, since they are fixed in different ways.
-
----
-
-## 1.5 Discussion
-
-1. Which customer messages are genuinely ambiguous? Could a human labeller disagree?
-2. Why can we use Exact Match for intents but not for captions?
-3. If the model returns `"The label is returns"`, did it fail the task? Which metric would say yes, and which would say no?
+</details>
 
 ---
 
 ## AI copilot prompts
 
-- *"Explain this LangChain chain `prompt | llm | StrOutputParser()` line by line and show the equivalent without the pipe operator."*
-- *"Suggest 5 additional test cases for a marketing-caption generator that would expose brand-guideline violations."*
+- *"My BLEU score is 0.0 for a short sentence even though it looks very similar to the reference. Explain why and how smoothing helps."*
+- *"Explain the difference between BERTScore precision, recall and F1 with a worked example."*
+- *"Write a function that runs each prompt variant 5 times and reports the mean and standard deviation of ROUGE-L."*
 
 ## Learner challenge
 
-Add a sixth brief that is deliberately tricky (for example, one that tempts the model to make a health claim). Predict the result **before** you run it.
+Write one new candidate that scores **higher on BLEU than candidate B but is worse marketing copy**. What does that tell you about optimising for a metric?
 
 ## Checkpoint
 
-- [ ] `outputs/lab1_marketing_v1.csv` exists
-- [ ] `outputs/lab1_intent.csv` exists
-- [ ] You wrote your own "what does good look like" list for the business
+- [ ] You have a per-sample score table and a mean-score table for v1
+- [ ] You can explain why candidate C is dangerous
+- [ ] You compared v1 and v2 and checked rule compliance
 
-**Next:** [Lab 2: Score with traditional NLP metrics](lab2_nlp_metrics.md)
+**Take the 10-minute break here**, then continue to [Lab 3: Build the RAG pipeline](lab3_rag_pipeline.md)
