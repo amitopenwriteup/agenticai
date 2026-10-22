@@ -19,27 +19,39 @@ Documents ─► Split ─► Embed ─► Store
 - Compare standalone vs RAG answers
 - Observe both successful and unsuccessful retrieval
 
+## How this lab works
+
+Each step creates a Python file with a `tee` command, then runs it. Run everything from inside `novahome_eval/` with your virtual environment active, with Ollama running and `data/docs/` created in Lab 0.
+
+> **Running in Jupyter?** Put `%%bash` on the first line of a cell for the `tee` blocks, and use `!python script_name.py` to run a script. The `'EOF'` quotes stop the shell from expanding characters inside the code, and `> /dev/null` hides the echo that `tee` prints. On Windows, use WSL or Git Bash.
+
+| File created | Step | Purpose |
+|---|---|---|
+| `lab3_01_load_and_chunk.py` | 3.1, 3.2 | Load documents and split them into chunks |
+| `lab3_02_embed_store.py` | 3.3 | Embed chunks and store them in ChromaDB |
+| `lab3_03_retrieval.py` | 3.4 | Run similarity search and inspect distances |
+| `lab3_04_augmented_generation.py` | 3.5 | Paste retrieved context into a prompt and generate |
+| `rag_app.py` | 3.6 | Reusable module used by Labs 4 and 5 |
+| `lab3_test_rag_app.py` | 3.6 | Quick test of the module |
+| `lab3_05_compare.py` | 3.7 | Standalone LLM vs RAG on all questions |
+| `lab3_06_failures.py` | 3.8 | Four deliberate failure demonstrations |
+
 ---
 
-## 3.1 Load the documents
+## 3.1 Load the documents and 3.2 chunk them
 
-```python
+```bash
+tee lab3_01_load_and_chunk.py > /dev/null << 'EOF'
 from pathlib import Path
 from langchain_core.documents import Document
-
-docs = [Document(page_content=p.read_text(), metadata={"source": p.name})
-        for p in sorted(Path("data/docs").glob("*.md"))]
-
-print(len(docs), "documents:", [d.metadata["source"] for d in docs])
-```
-
-**Explain:** a `Document` is text plus **metadata**. The `source` metadata is what lets us verify later *which file* the answer came from.
-
-## 3.2 Chunking
-
-```python
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+# 3.1 Load the documents
+docs = [Document(page_content=p.read_text(), metadata={"source": p.name})
+        for p in sorted(Path("data/docs").glob("*.md"))]
+print(len(docs), "documents:", [d.metadata["source"] for d in docs])
+
+# 3.2 Chunking
 splitter = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50)
 chunks = splitter.split_documents(docs)
 
@@ -47,7 +59,14 @@ print(len(chunks), "chunks")
 for c in chunks[:4]:
     print("-" * 60)
     print(c.metadata, "\n", c.page_content)
+EOF
 ```
+
+```bash
+python lab3_01_load_and_chunk.py
+```
+
+**Explain:** a `Document` is text plus **metadata**. The `source` metadata is what lets us verify later *which file* the answer came from.
 
 | Choice | Effect |
 |---|---|
@@ -59,9 +78,17 @@ for c in chunks[:4]:
 
 ## 3.3 Embeddings and ChromaDB
 
-```python
+```bash
+tee lab3_02_embed_store.py > /dev/null << 'EOF'
+from pathlib import Path
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
+
+docs = [Document(page_content=p.read_text(), metadata={"source": p.name})
+        for p in sorted(Path("data/docs").glob("*.md"))]
+chunks = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50).split_documents(docs)
 
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
@@ -75,42 +102,66 @@ if vectorstore._collection.count() == 0:       # avoid re-adding on re-runs
     vectorstore.add_documents(chunks)
 
 print("Chunks stored:", vectorstore._collection.count())
-```
 
-**Explain:** each chunk becomes a vector. Chroma stores vectors plus text plus metadata and persists them in `chroma_db/`.
-
-### Peek inside Chroma
-
-```python
+# Peek inside Chroma
 peek = vectorstore._collection.peek(2)
 print(peek["ids"])
 print(peek["metadatas"])
 print(len(peek["embeddings"][0]), "dimensions per vector")
+EOF
 ```
+
+```bash
+python lab3_02_embed_store.py
+```
+
+**Explain:** each chunk becomes a vector. Chroma stores vectors plus text plus metadata and persists them in `chroma_db/`.
 
 ## 3.4 Retrieval
 
-```python
+```bash
+tee lab3_03_retrieval.py > /dev/null << 'EOF'
+from langchain_ollama import OllamaEmbeddings
+from langchain_chroma import Chroma
+
+vectorstore = Chroma(
+    collection_name="novahome_350_50",
+    embedding_function=OllamaEmbeddings(model="nomic-embed-text"),
+    persist_directory="chroma_db",
+)
+
 query = "How long does the NovaBrew keep water warm?"
 
 for doc, score in vectorstore.similarity_search_with_score(query, k=3):
     print(f"distance={score:.3f} | {doc.metadata['source']}")
     print(doc.page_content[:200].replace("\n", " "), "\n")
+
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+print("Retriever returned", len(retriever.invoke(query)), "documents")
+EOF
+```
+
+```bash
+python lab3_03_retrieval.py
 ```
 
 > **Reading the score:** Chroma returns a **distance**, so **lower is closer**. Do not compare distances across different embedding models or collections.
 
-```python
-retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-retriever.invoke(query)
-```
-
 ## 3.5 Augmented generation
 
-```python
-from langchain_ollama import ChatOllama
+```bash
+tee lab3_04_augmented_generation.py > /dev/null << 'EOF'
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+
+vectorstore = Chroma(
+    collection_name="novahome_350_50",
+    embedding_function=OllamaEmbeddings(model="nomic-embed-text"),
+    persist_directory="chroma_db",
+)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
 GROUNDED_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
@@ -123,9 +174,17 @@ GROUNDED_PROMPT = ChatPromptTemplate.from_messages([
 llm = ChatOllama(model="llama3.2:3b", temperature=0)
 rag_chain = GROUNDED_PROMPT | llm | StrOutputParser()
 
+query = "How long does the NovaBrew keep water warm?"
 ctx_docs = retriever.invoke(query)
 context = "\n\n".join(d.page_content for d in ctx_docs)
-print(rag_chain.invoke({"context": context, "question": query}))
+
+print("CONTEXT SENT TO THE MODEL:\n", context, "\n")
+print("ANSWER:", rag_chain.invoke({"context": context, "question": query}))
+EOF
+```
+
+```bash
+python lab3_04_augmented_generation.py
 ```
 
 **Explain the augmentation step:** the model never "learns" the documents. We simply paste retrieved text into the prompt. The system instruction is what tells the model to stay inside it.
@@ -134,10 +193,10 @@ print(rag_chain.invoke({"context": context, "question": query}))
 
 ## 3.6 Package it: create `rag_app.py`
 
-Evaluation needs the **retrieved contexts** as well as the answer, so our function returns both. Run this cell to write the file.
+Evaluation needs the **retrieved contexts** as well as the answer, so our function returns both.
 
-```python
-%%writefile rag_app.py
+```bash
+tee rag_app.py > /dev/null << 'EOF'
 from functools import lru_cache
 from pathlib import Path
 
@@ -205,23 +264,35 @@ def plain_answer(question, temperature=0.0):
     """Standalone LLM with no retrieval (the Lab 1-2 style application)."""
     llm = ChatOllama(model=GEN_MODEL, temperature=temperature)
     return (PLAIN_PROMPT | llm | StrOutputParser()).invoke({"question": question}).strip()
+EOF
 ```
 
 Test the module:
 
-```python
-from rag_app import rag_answer, plain_answer
+```bash
+tee lab3_test_rag_app.py > /dev/null << 'EOF'
+from rag_app import rag_answer
 
 r = rag_answer("How long does the NovaBrew keep water warm?")
-print(r["answer"]); print(r["sources"])
+print(r["answer"])
+print(r["sources"])
+EOF
+```
+
+```bash
+python lab3_test_rag_app.py
 ```
 
 ---
 
 ## 3.7 Compare: standalone LLM vs RAG
 
-```python
-import json, pandas as pd
+```bash
+tee lab3_05_compare.py > /dev/null << 'EOF'
+import json
+import pandas as pd
+from rag_app import plain_answer, rag_answer
+
 rag_eval = json.load(open("data/rag_eval.json"))
 
 rows = []
@@ -235,8 +306,16 @@ for item in rag_eval:
 cmp = pd.DataFrame(rows)
 cmp.to_csv("outputs/lab3_plain_vs_rag.csv", index=False)
 
-pd.set_option("display.max_colwidth", 120)
-cmp[["id", "plain", "rag", "reference"]]
+for r in rows:
+    print(f"[{r['id']}] {r['question']}")
+    print("  PLAIN    :", r["plain"])
+    print("  RAG      :", r["rag"])
+    print("  REFERENCE:", r["reference"], "\n")
+EOF
+```
+
+```bash
+python lab3_05_compare.py
 ```
 
 **Discussion prompts**
@@ -251,42 +330,50 @@ cmp[["id", "plain", "rag", "reference"]]
 
 ## 3.8 Demonstrate retrieval failures on purpose
 
-### Failure A: out-of-scope question (q7)
+One script runs all four failures, so the output can be read side by side.
 
-```python
+```bash
+tee lab3_06_failures.py > /dev/null << 'EOF'
+from rag_app import rag_answer, LOOSE_PROMPT
+
+print("=== Failure A: out-of-scope question (q7) ===")
 r = rag_answer("Does NovaHome sell a robot vacuum?")
-print(r["answer"]); print(r["sources"])
-```
+print(r["answer"])
+print(r["sources"], "\n")
 
-Retrieval will still return the *closest* chunks, even though none is relevant. A vector search **always returns something**. The prompt's refusal rule is the only safety net.
-
-### Failure B: the facts live in two places (q9)
-
-```python
+print("=== Failure B: the facts live in two places (q9) ===")
+q9 = "If I buy a NovaBrew kettle and a NovaAir P2, what is the total price and is standard shipping free?"
 for k in (1, 3):
-    r = rag_answer("If I buy a NovaBrew kettle and a NovaAir P2, what is the total price and is standard shipping free?", k=k)
-    print(f"k={k}", r["sources"]); print(r["answer"], "\n")
+    r = rag_answer(q9, k=k)
+    print(f"k={k}", r["sources"])
+    print(r["answer"], "\n")
+
+print("=== Failure C: unhelpful chunking (chunk_size=120, overlap=0) ===")
+r = rag_answer("How long is the warranty on the NovaAir purifier and does it cover filters?",
+               chunk_size=120, chunk_overlap=0)
+print(r["sources"])
+for c in r["contexts"]:
+    print("  CONTEXT:", c.replace("\n", " "))
+print(r["answer"], "\n")
+
+print("=== Failure D: a prompt that does not enforce grounding ===")
+r = rag_answer("Does NovaHome sell a robot vacuum?", prompt=LOOSE_PROMPT)
+print(r["answer"])
+EOF
 ```
 
-With `k=1` only one document can be retrieved, so a complete answer is impossible.
-
-### Failure C: unhelpful chunking
-
-```python
-r = rag_answer("How long is the warranty on the NovaAir purifier and does it cover filters?", chunk_size=120, chunk_overlap=0)
-print(r["sources"]); print(r["contexts"]); print(r["answer"])
+```bash
+python lab3_06_failures.py
 ```
 
-Tiny chunks can cut a fact away from the heading that gives it meaning.
+**What each failure shows**
 
-### Failure D: a prompt that does not enforce grounding
-
-```python
-from rag_app import LOOSE_PROMPT
-print(rag_answer("Does NovaHome sell a robot vacuum?", prompt=LOOSE_PROMPT)["answer"])
-```
-
-Confident one-sentence answers invite confident hallucination.
+| Failure | Lesson |
+|---|---|
+| A: out-of-scope | A vector search **always returns something**, even when nothing is relevant. The prompt's refusal rule is the only safety net. |
+| B: two documents | With `k=1` only one document can be retrieved, so a complete answer is impossible. |
+| C: tiny chunks | Tiny chunks can cut a fact away from the heading that gives it meaning. |
+| D: loose prompt | Confident one-sentence answers invite confident hallucination. |
 
 > **Bridge to Lab 4:** we can *see* these failures by reading them. Evaluation metrics must make them **measurable**, across hundreds of questions.
 
@@ -298,6 +385,16 @@ This pattern appears in HR policy bots, IT helpdesks, customer-support assistant
 
 ---
 
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---|---|
+| `Connection refused` or timeout from Ollama | Start Ollama (`ollama serve`) and check `ollama list` |
+| `model "nomic-embed-text" not found` | Run `ollama pull nomic-embed-text` |
+| Empty or odd results after changing documents | Delete `chroma_db/` and re-run, since collections are only filled when empty |
+| `ModuleNotFoundError: rag_app` | Run scripts from `novahome_eval/` and make sure the `rag_app.py` block was run |
+| `SyntaxError` right after pasting | The closing `EOF` must be alone on its line with no leading spaces |
+
 ## AI copilot prompts
 
 - *"Explain what `RecursiveCharacterTextSplitter` does with `chunk_size` and `chunk_overlap`, using a short example string."*
@@ -306,7 +403,7 @@ This pattern appears in HR policy bots, IT helpdesks, customer-support assistant
 
 ## Learner challenge
 
-Add a fifth document, `faq_shipping_exceptions.md`, containing a rule that **contradicts** `policies.md` (for example, a different express price). Ask the same question and describe what the assistant does. Why is this an evaluation problem and not just a retrieval problem?
+Use `tee` to add a fifth document, `data/docs/faq_shipping_exceptions.md`, containing a rule that **contradicts** `policies.md` (for example, a different express price). Delete `chroma_db/`, re-run `lab3_05_compare.py`, and describe what the assistant does. Why is this an evaluation problem and not just a retrieval problem?
 
 ## Checkpoint
 
