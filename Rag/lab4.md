@@ -29,31 +29,44 @@ Question ─► [Retrieval] ─► Contexts ─► [Generation] ─► Answer
 - Show retrieval-good/generation-bad and the reverse
 - Locate the failing component for each bad answer
 
+## How this lab works
+
+Each step creates a Python file with a `tee` command, then runs it. Run everything from inside `novahome_eval/` with your virtual environment active and Ollama running. This lab needs `rag_app.py` and `data/rag_eval.json` from Labs 0 and 3, plus the `llama3.1:8b` judge model (see Lab 0).
+
+> **Running in Jupyter?** Put `%%bash` on the first line of a cell for the `tee` blocks, and use `!python script_name.py` to run a script. The `'EOF'` quotes stop the shell from expanding characters inside the code, and `> /dev/null` hides the echo that `tee` prints. On Windows, use WSL or Git Bash.
+
+| File created | Step | Purpose |
+|---|---|---|
+| `lab4_01_generate_and_retrieval_check.py` | 4.1, 4.2 | Generate answers, then compute hit rate and MRR (no judge LLM) |
+| `lab4_common.py` | 4.3 | RAGAS setup shared by later scripts |
+| `lab4_02_ragas_eval.py` | 4.4 | Run RAGAS metrics and save a cached report |
+| `lab4_03_read_report.py` | 4.6 | Read the report row by row and flag weak scores |
+| `lab4_04_failure_cases.py` | 4.7 | Two deliberate failure demonstrations |
+| `lab4_05_fallback_judge.py` | 4.8 | A hand-written LLM-as-judge fallback |
+
 ---
 
-## 4.1 Generate answers and contexts for all questions
+## 4.1 Generate answers and contexts, and 4.2 retrieval sanity check
 
-```python
-import json, pandas as pd
+Because we know which document should contain each answer, we can compute a simple **hit rate** and **reciprocal rank**. These are fast, free and fully deterministic, so run them **before** any LLM-judged metric.
+
+```bash
+tee lab4_01_generate_and_retrieval_check.py > /dev/null << 'EOF'
+import json
+import pandas as pd
 from rag_app import rag_answer
 
 rag_eval = json.load(open("data/rag_eval.json"))
 
+# 4.1 Generate answers and contexts for all questions
 records = []
 for item in rag_eval:
     out = rag_answer(item["question"], k=3)
-    records.append({**item, **{"answer": out["answer"], "contexts": out["contexts"], "sources": out["sources"]}})
-
+    records.append({**item, "answer": out["answer"], "contexts": out["contexts"], "sources": out["sources"]})
 df = pd.DataFrame(records)
-df.to_pickle("outputs/lab4_rag_run.pkl")
-df[["id", "question", "answer", "sources"]]
-```
 
-## 4.2 Retrieval sanity check (no judge LLM needed)
 
-Because we know which document should contain each answer, we can compute a simple **hit rate** and **reciprocal rank**. These are fast, free and fully deterministic, so run them **before** any LLM-judged metric.
-
-```python
+# 4.2 Retrieval sanity check (no judge LLM needed)
 def retrieval_check(row):
     expected = set(row["expected_sources"])
     if not expected:                       # out-of-scope question: nothing should be "found"
@@ -64,11 +77,25 @@ def retrieval_check(row):
     rr = next((1 / (i + 1) for i, s in enumerate(retrieved) if s in expected), 0.0)
     return pd.Series({"hit": hit, "all_found": all_found, "rr": rr})
 
+
 df = pd.concat([df, df.apply(retrieval_check, axis=1)], axis=1)
-print(df[["id", "sources", "hit", "all_found", "rr"]])
-print("\nHit rate@3:", df["hit"].dropna().astype(float).mean().round(2))
-print("All-sources-found rate:", df["all_found"].dropna().astype(float).mean().round(2))
-print("MRR:", df["rr"].dropna().mean().round(2))
+df.to_pickle("outputs/lab4_rag_run.pkl")
+df[["id", "question", "answer", "sources", "hit", "all_found", "rr"]].to_csv(
+    "outputs/lab4_retrieval_check.csv", index=False)
+
+for _, r in df.iterrows():
+    print(f"[{r['id']}] {r['question']}")
+    print("  ANSWER :", r["answer"])
+    print("  SOURCES:", r["sources"], "| hit:", r["hit"], "| all_found:", r["all_found"], "| rr:", r["rr"], "\n")
+
+print("Hit rate@3:", round(df["hit"].dropna().astype(float).mean(), 2))
+print("All-sources-found rate:", round(df["all_found"].dropna().astype(float).mean(), 2))
+print("MRR:", round(df["rr"].dropna().astype(float).mean(), 2))
+EOF
+```
+
+```bash
+python lab4_01_generate_and_retrieval_check.py
 ```
 
 | Metric | Meaning |
@@ -85,8 +112,9 @@ print("MRR:", df["rr"].dropna().mean().round(2))
 
 > **Version note:** RAGAS APIs change between releases. The code below follows the `EvaluationDataset` interface (0.2.x and later). Check `pip show ragas` and the official documentation if an import fails, and ask your AI copilot to adapt the code to your version.
 
-```python
-from ragas import EvaluationDataset, evaluate
+```bash
+tee lab4_common.py > /dev/null << 'EOF'
+from ragas import EvaluationDataset
 from ragas.run_config import RunConfig
 from ragas.llms import LangchainLLMWrapper
 from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -103,18 +131,20 @@ try:
     HAS_CTX_REL = True
 except ImportError:
     HAS_CTX_REL = False
-    print("ContextRelevance not available in this ragas version; see the fallback in 4.7.")
+    print("ContextRelevance not available in this ragas version; see the fallback in 4.8.")
 
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 # The judge should be at least as capable as the generator. A stronger judge gives more reliable scores.
 judge_llm = LangchainLLMWrapper(ChatOllama(model="llama3.1:8b", temperature=0))
 judge_emb = LangchainEmbeddingsWrapper(OllamaEmbeddings(model="nomic-embed-text"))
-```
 
-### The RAGAS data format
+# Local models: keep concurrency low
+RUN_CONFIG = RunConfig(timeout=300, max_workers=2)
 
-```python
+NON_SCORE_COLS = ("id", "user_input", "retrieved_contexts", "response", "reference")
+
+
 def to_ragas(df):
     return EvaluationDataset.from_list([
         {"user_input": r["question"],
@@ -124,8 +154,17 @@ def to_ragas(df):
         for _, r in df.iterrows()
     ])
 
-dataset = to_ragas(df)
+
+def all_metrics():
+    metrics = [Faithfulness(), ResponseRelevancy(), LLMContextPrecisionWithReference(),
+               LLMContextRecall(), AnswerCorrectness()]
+    if HAS_CTX_REL:
+        metrics.append(ContextRelevance())
+    return metrics
+EOF
 ```
+
+### The RAGAS data format
 
 | RAGAS field | Comes from |
 |---|---|
@@ -136,34 +175,46 @@ dataset = to_ragas(df)
 
 ## 4.4 Run the evaluation
 
-```python
-metrics = [Faithfulness(), ResponseRelevancy(), LLMContextPrecisionWithReference(),
-           LLMContextRecall(), AnswerCorrectness()]
-if HAS_CTX_REL:
-    metrics.append(ContextRelevance())
+```bash
+tee lab4_02_ragas_eval.py > /dev/null << 'EOF'
+import sys
+import pandas as pd
+from ragas import evaluate
+from lab4_common import (to_ragas, all_metrics, judge_llm, judge_emb, RUN_CONFIG, NON_SCORE_COLS)
 
-result = evaluate(
-    dataset=dataset,
-    metrics=metrics,
-    llm=judge_llm,
-    embeddings=judge_emb,
-    run_config=RunConfig(timeout=300, max_workers=2),   # local models: keep concurrency low
-)
+REPORT = "outputs/lab4_ragas_report.csv"
 
-report = result.to_pandas()
-report.insert(0, "id", df["id"].values)
-report.to_csv("outputs/lab4_ragas_report.csv", index=False)      # cache for the live session
-report.round(2)
-```
+if "--cached" in sys.argv:
+    report = pd.read_csv(REPORT)
+    print("Loaded cached report:", REPORT)
+else:
+    df = pd.read_pickle("outputs/lab4_rag_run.pkl")
+    result = evaluate(dataset=to_ragas(df), metrics=all_metrics(),
+                      llm=judge_llm, embeddings=judge_emb, run_config=RUN_CONFIG)
+    report = result.to_pandas()
+    report.insert(0, "id", df["id"].values)
+    report.to_csv(REPORT, index=False)          # cache for the live session
+    print("Saved", REPORT)
 
-> **Instructor tip:** local judge models are slow and sometimes return malformed JSON, which shows up as `NaN` scores or timeouts. Run this once before the session and **load the cached CSV live**:
-> `report = pd.read_csv("outputs/lab4_ragas_report.csv")`
-> Then re-run only one or two questions live to show the mechanics.
-
-```python
-score_cols = [c for c in report.columns if c not in ("id", "user_input", "retrieved_contexts", "response", "reference")]
+score_cols = [c for c in report.columns if c not in NON_SCORE_COLS]
+print("\nPer-question scores:")
+print(report[["id"] + score_cols].round(2).to_string(index=False))
+print("\nMean scores:")
 print(report[score_cols].mean().round(2))
+EOF
 ```
+
+```bash
+python lab4_02_ragas_eval.py
+```
+
+> **Instructor tip:** local judge models are slow and sometimes return malformed JSON, which shows up as `NaN` scores or timeouts. Run the command above once before the session, then **load the cached CSV live**:
+>
+> ```bash
+> python lab4_02_ragas_eval.py --cached
+> ```
+>
+> Then re-run only one or two questions live to show the mechanics.
 
 ---
 
@@ -196,10 +247,32 @@ print(report[score_cols].mean().round(2))
 
 ## 4.6 Read the report row by row
 
-```python
-view = report.merge(df[["id", "question", "answer", "sources"]], on="id", suffixes=("", "_df"))
-cols = ["id", "question", "answer"] + score_cols
-view[cols].round(2)
+```bash
+tee lab4_03_read_report.py > /dev/null << 'EOF'
+import pandas as pd
+
+NON_SCORE_COLS = ("id", "user_input", "retrieved_contexts", "response", "reference")
+
+report = pd.read_csv("outputs/lab4_ragas_report.csv")
+df = pd.read_pickle("outputs/lab4_rag_run.pkl")
+
+score_cols = [c for c in report.columns if c not in NON_SCORE_COLS]
+view = report.merge(df[["id", "question", "answer", "sources", "hit", "all_found"]], on="id")
+
+for _, r in view.iterrows():
+    low = [c for c in score_cols if pd.notna(r[c]) and r[c] < 0.6]
+    print(f"[{r['id']}] {r['question']}")
+    print("  ANSWER   :", str(r["answer"])[:160])
+    print("  RETRIEVAL: hit =", r["hit"], "| all_found =", r["all_found"], "| sources =", r["sources"])
+    print("  SCORES   :", {c: round(float(r[c]), 2) for c in score_cols if pd.notna(r[c])})
+    print("  NEEDS ATTENTION (<0.6):", low if low else "none", "\n")
+
+view.to_csv("outputs/lab4_report_with_answers.csv", index=False)
+EOF
+```
+
+```bash
+python lab4_03_read_report.py
 ```
 
 ### Guided diagnosis exercise
@@ -226,48 +299,58 @@ Is Correctness low?     ── yes ─►  Check reference quality or reasoning 
 
 ## 4.7 Deliberate failure demonstrations
 
-### Case 1: retrieval succeeds, generation fails
+One script runs both cases.
 
-Use the loose prompt, which encourages confident short answers and does not enforce grounding. Retrieval is unchanged.
+```bash
+tee lab4_04_failure_cases.py > /dev/null << 'EOF'
+import json
+import pandas as pd
+from ragas import evaluate
+from ragas.metrics import Faithfulness, AnswerCorrectness, LLMContextRecall
+from rag_app import rag_answer, LOOSE_PROMPT
+from lab4_common import to_ragas, judge_llm, judge_emb, RUN_CONFIG
 
-```python
-from rag_app import LOOSE_PROMPT
+rag_eval = json.load(open("data/rag_eval.json"))
+pd.set_option("display.width", 200)
+pd.set_option("display.max_colwidth", 90)
 
-qs = [i for i in rag_eval if i["id"] in ("q4", "q7", "q8")]
-rows = []
-for item in qs:
-    out = rag_answer(item["question"], k=3, prompt=LOOSE_PROMPT)
-    rows.append({**item, "answer": out["answer"], "contexts": out["contexts"], "sources": out["sources"]})
-df_loose = pd.DataFrame(rows)
 
-res_loose = evaluate(to_ragas(df_loose), metrics=[Faithfulness(), AnswerCorrectness()],
-                     llm=judge_llm, embeddings=judge_emb, run_config=RunConfig(timeout=300, max_workers=2))
-out_loose = res_loose.to_pandas(); out_loose.insert(0, "id", df_loose["id"].values)
-out_loose[["id", "response", "faithfulness", "answer_correctness"]].round(2)
+def build(ids, **kwargs):
+    rows = []
+    for item in rag_eval:
+        if item["id"] in ids:
+            out = rag_answer(item["question"], **kwargs)
+            rows.append({**item, "answer": out["answer"], "contexts": out["contexts"], "sources": out["sources"]})
+    return pd.DataFrame(rows)
+
+
+# Case 1: retrieval succeeds, generation fails (loose prompt, same retrieval)
+df_loose = build(("q4", "q7", "q8"), k=3, prompt=LOOSE_PROMPT)
+res = evaluate(to_ragas(df_loose), metrics=[Faithfulness(), AnswerCorrectness()],
+               llm=judge_llm, embeddings=judge_emb, run_config=RUN_CONFIG).to_pandas()
+res.insert(0, "id", df_loose["id"].values)
+print("=== Case 1: good retrieval, loose prompt ===")
+print(res[["id", "response", "faithfulness", "answer_correctness"]].round(2).to_string(index=False))
+res.to_csv("outputs/lab4_case1_loose_prompt.csv", index=False)
+
+# Case 2: retrieval fails, generation is fine (k=1, tiny chunks, strict prompt)
+df_bad = build(("q4", "q9"), k=1, chunk_size=120, chunk_overlap=0)
+res2 = evaluate(to_ragas(df_bad), metrics=[LLMContextRecall(), Faithfulness(), AnswerCorrectness()],
+                llm=judge_llm, embeddings=judge_emb, run_config=RUN_CONFIG).to_pandas()
+res2.insert(0, "id", df_bad["id"].values)
+print("\n=== Case 2: poor retrieval, strict prompt ===")
+print(res2[["id", "response", "context_recall", "faithfulness", "answer_correctness"]].round(2).to_string(index=False))
+res2.to_csv("outputs/lab4_case2_bad_retrieval.csv", index=False)
+EOF
 ```
 
-**Expected pattern:** the right documents were retrieved (hit = True), but **Faithfulness drops** because the answer adds claims, or the model invents an answer instead of refusing.
-
-### Case 2: retrieval fails, generation is fine
-
-Force poor retrieval (`k=1`, tiny chunks) and keep the strict grounded prompt.
-
-```python
-rows = []
-for item in rag_eval:
-    if item["id"] in ("q4", "q9"):
-        out = rag_answer(item["question"], k=1, chunk_size=120, chunk_overlap=0)
-        rows.append({**item, "answer": out["answer"], "contexts": out["contexts"], "sources": out["sources"]})
-df_bad_ret = pd.DataFrame(rows)
-
-res_bad = evaluate(to_ragas(df_bad_ret),
-                   metrics=[LLMContextRecall(), Faithfulness(), AnswerCorrectness()],
-                   llm=judge_llm, embeddings=judge_emb, run_config=RunConfig(timeout=300, max_workers=2))
-out_bad = res_bad.to_pandas(); out_bad.insert(0, "id", df_bad_ret["id"].values)
-out_bad[["id", "response", "context_recall", "faithfulness", "answer_correctness"]].round(2)
+```bash
+python lab4_04_failure_cases.py
 ```
 
-**Expected pattern:** **Context Recall is low** (facts were never retrieved). Faithfulness may be **high**, because the model honestly said "I don't know" or stuck to what little it had. This is the classic case where an answer is *faithful but wrong*, so you need both context and correctness metrics.
+**Case 1 expected pattern:** the right documents were retrieved (hit = True), but **Faithfulness drops** because the answer adds claims, or the model invents an answer instead of refusing.
+
+**Case 2 expected pattern:** **Context Recall is low** (facts were never retrieved). Faithfulness may be **high**, because the model honestly said "I don't know" or stuck to what little it had. This is the classic case where an answer is *faithful but wrong*, so you need both context and correctness metrics.
 
 ### Summary matrix
 
@@ -284,7 +367,9 @@ out_bad[["id", "response", "context_recall", "faithfulness", "answer_correctness
 
 A minimal **LLM-as-judge** you can write yourself. It teaches what the metrics actually do.
 
-```python
+```bash
+tee lab4_05_fallback_judge.py > /dev/null << 'EOF'
+import pandas as pd
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_ollama import ChatOllama
@@ -304,13 +389,34 @@ Finish with one line: SCORE = <supported claims>/<total claims>."""
 )
 faith_chain = FAITH_PROMPT | judge | StrOutputParser()
 
-r = df.iloc[0]
-print(faith_chain.invoke({"context": "\n\n".join(r["contexts"]), "answer": r["answer"]}))
+df = pd.read_pickle("outputs/lab4_rag_run.pkl")
+for idx in (0, 2):          # q1 (simple fact) and q3 (policy)
+    r = df.iloc[idx]
+    print(f"[{r['id']}] {r['question']}")
+    print("ANSWER:", r["answer"])
+    print(faith_chain.invoke({"context": "\n\n".join(r["contexts"]), "answer": r["answer"]}), "\n")
+EOF
+```
+
+```bash
+python lab4_05_fallback_judge.py
 ```
 
 Ask learners: *what biases might this judge have?* (verbosity, agreeing with fluent text, sensitivity to prompt wording)
 
 ---
+
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---|---|
+| `FileNotFoundError: outputs/lab4_rag_run.pkl` | Run `lab4_01_generate_and_retrieval_check.py` first |
+| `ModuleNotFoundError: ... langchain_community.chat_models.vertexai` on `from ragas import ...` | `langchain-community` is newer than your RAGAS expects. Run `pip install "langchain-community<0.4.2"` (try `<0.4` if it persists), then re-run |
+| `ImportError` from `ragas` or `ragas.metrics` | Your RAGAS version differs; check `pip show ragas` and adapt `lab4_common.py` |
+| `NaN` scores or timeouts | Local judge is slow or returned malformed JSON; lower `max_workers`, raise `timeout`, use a stronger judge, or load the cached report with `--cached` |
+| `KeyError: 'context_recall'` or similar | Column names differ by version; print `res2.columns` and adjust |
+| `model "llama3.1:8b" not found` | Run `ollama pull llama3.1:8b` |
+| `SyntaxError` right after pasting | The closing `EOF` must be alone on its line with no leading spaces |
 
 ## AI copilot prompts
 
@@ -320,11 +426,11 @@ Ask learners: *what biases might this judge have?* (verbosity, agreeing with flu
 
 ## Learner challenge
 
-Find a row where **Answer Relevance is low but the answer is actually right** (hint: look at refusals). Propose how you would change the evaluation so that correct refusals are scored as successes (for example, a separate "should refuse" flag in the dataset).
+Find a row where **Answer Relevance is low but the answer is actually right** (hint: look at refusals in `outputs/lab4_report_with_answers.csv`). Propose how you would change the evaluation so that correct refusals are scored as successes (for example, a separate "should refuse" flag in `data/rag_eval.json`).
 
 ## Checkpoint
 
-- [ ] Retrieval hit rate and MRR computed
+- [ ] Retrieval hit rate and MRR computed (`outputs/lab4_retrieval_check.csv`)
 - [ ] `outputs/lab4_ragas_report.csv` saved
 - [ ] You can explain faithful-but-wrong vs unfaithful-but-right
 - [ ] You completed the diagnosis table for at least three rows
