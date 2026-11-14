@@ -1,8 +1,7 @@
 # Lab: Cloud Setup for PySpark on GCP
 
 **Course:** ETL on Cloud
-**Duration:** about 90 minutes
-**Level:** Beginner
+
 
 In this lab you will set up a Google Cloud Platform (GCP) account, install and configure the `gcloud` CLI, create a Cloud Storage bucket, run a PySpark job on a Dataproc cluster, and clean everything up.
 
