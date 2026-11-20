@@ -55,7 +55,7 @@ pip install -U langgraph langchain-core langchain-ollama \
 
 ```bash
 sudo systemctl stop ollama     # stop the default service
-OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=30m ollama serve
+OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=30m ollama serve &
 ```
 
 Run that in a second terminal, then start Jupyter in the first:
@@ -65,7 +65,7 @@ source .venv/bin/activate
 jupyter lab --no-browser --ip=0.0.0.0 --port=8888
 ```
 
-### 3. Warm up the model (avoids a 20-second cold start in front of learners)
+### 3. Warm up the model
 
 ```bash
 ollama run qwen2.5:1.5b "Say ready"
