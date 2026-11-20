@@ -9,8 +9,8 @@
 
 ## 0. How to use this guide
 
-- Create **one notebook**, `agentic_workflow.ipynb`. Every block marked **▶ CELL** is one notebook cell, to be pasted or live-coded in order.
-- Blocks marked **🗣 SAY** are talking points. Blocks marked **🧪 YOUR TURN** are 2-minute learner activities. Blocks marked **🤖 PROMPT LAB** are where you demonstrate the LLM as a productivity partner.
+- Create **one notebook**, `agentic_workflow.ipynb`. Every block marked **CELL** is one notebook cell, to be pasted or live-coded in order.
+- Blocks marked **SAY** are talking points. Blocks marked **YOUR TURN** are 2-minute learner activities. Blocks marked **PROMPT LAB** are where you demonstrate the LLM as a productivity partner.
 - The whole session uses **one business problem** and one growing codebase, so learners see a simple script become a reliable, stateful, human-supervised workflow.
 
 ### Timetable (180 min total, break included)
@@ -26,23 +26,8 @@
 | 2:35 | 6. End-to-End Integration | 15 | Full run with HITL and trace analysis |
 | 2:50 | 7. Conclusion | 10 | Recap and Q&A |
 
-### Learning outcomes covered
-
-| Outcome | Where |
-|---|---|
-| Workflows vs autonomous agents | §2 |
-| Hybrid architectures | §2.3 |
-| Pipelines, DAGs, state machines | §3 |
-| Structured workflows in LangGraph | §4 |
-| Branching, parallel, retries, fallbacks | §2.4, §4 |
-| Human-in-the-loop | §3.5, §5.2, §6 |
-| Sessions, checkpointing, memory | §5 |
-| Trace analysis and debugging | §4.6, §4.7 |
-| Reliable long-running design | §6, §7 |
 
 ---
-
-## Pre-session checklist (do this the day before)
 
 ### 1. System setup (Ubuntu)
 
