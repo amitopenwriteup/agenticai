@@ -62,7 +62,7 @@ Run that in a second terminal, then start Jupyter in the first:
 
 ```bash
 source .venv/bin/activate
-jupyter lab --no-browser
+jupyter lab --no-browser --ip=0.0.0.0 --port=8888
 ```
 
 ### 3. Warm up the model (avoids a 20-second cold start in front of learners)
